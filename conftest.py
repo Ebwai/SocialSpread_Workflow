@@ -3,6 +3,10 @@ import os
 import shutil
 import glob
 from datetime import datetime
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 def get_screen_viewport(default_width=1920, default_height=1080):
     try:
@@ -31,9 +35,9 @@ def pytest_addoption(parser):
     parser.addoption("--summary", type=str, 
                      help='文章摘要（可选，如不指定则使用豆包AI自动生成）')
     parser.addoption("--url", type=str, 
-                     help='原文链接（可选，如不指定则从钉钉文档自动获取）')
+                     help='原文链接（必填）')
     parser.addoption("--markdown-file", type=str, 
-                     help='Markdown文件路径（可选，如不指定则从钉钉文档自动下载）')
+                     help='Markdown文件路径（必填）')
     parser.addoption("--user-data-dir", type=str, 
                      default='D:/tornadofiles/scripts_脚本/github_projects/playwright-automation/chromium-browser-data',
                      help='浏览器用户数据目录')
@@ -56,6 +60,10 @@ def pytest_addoption(parser):
     parser.addoption("--rewrite-platform-content", type=str,
                      default='false',
                      help='是否按平台风格改写正文，可选值：true/false，默认为false')
+    parser.addoption("--rewrite-special-prompt", type=str,
+                     help='正文改写特殊提示词（可选）')
+    parser.addoption("--image-special-prompt", type=str,
+                     help='封面图生成特殊提示词（可选）')
 
 def cleanup_old_backups(max_backups=3):
     """清理旧的备份目录，只保留最近的指定数量的备份"""

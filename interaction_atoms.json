@@ -1,0 +1,52 @@
+{
+    "doubao.chat.upload_file_option": {
+        "selector": "get_by_role(\"button\").filter(has_text=\"选择云盘文件上传代码上传文件或图片代码文件代码文件夹\")",
+        "action_type": "click",
+        "updated_at": 1772778855.6627257
+    },
+    "doubao.chat.input_box": {
+        "selector": "get_by_test_id(\"chat_input_input\")",
+        "action_type": "fill",
+        "updated_at": 1772767434.322744
+    },
+    "doubao.chat.mode_selection_思考": {
+        "selector": "get_by_role(\"button\")",
+        "action_type": "click",
+        "updated_at": 1772769029.8966389
+    },
+    "doubao.chat.send_button": {
+        "selector": "locator(\".paragraph-Ih8BnQ\")",
+        "action_type": "click",
+        "updated_at": 1772769638.727974
+    },
+    "doubao.chat.input_box_v2": {
+        "selector": "get_by_test_id(\"skill_bar_button_3\")",
+        "action_type": "fill",
+        "updated_at": 1772771114.038487
+    },
+    "doubao.chat.copy_button_last": {
+        "selector": "get_by_test_id(\"receive_message\").get_by_test_id(\"message_action_copy\")",
+        "action_type": "click",
+        "updated_at": 1772784788.4842036
+    },
+    "doubao.chat.input_box_v3": {
+        "selector": "get_by_test_id(\"chat_input_input\")",
+        "action_type": "fill",
+        "updated_at": 1772773265.3682177
+    },
+    "doubao.chat.input_box_paste": {
+        "selector": "get_by_test_id(\"chat_input_input\")",
+        "action_type": "click",
+        "updated_at": 1772780176.832977
+    },
+    "doubao.chat.input_box_v4": {
+        "selector": "get_by_test_id(\"chat_input_input\")",
+        "action_type": "fill",
+        "updated_at": 1772783739.8168657
+    },
+    "doubao.image.ratio_button": {
+        "selector": "get_by_test_id(\"skill_bar_button_3\")",
+        "action_type": "click",
+        "updated_at": 1772783844.2751405
+    }
+}

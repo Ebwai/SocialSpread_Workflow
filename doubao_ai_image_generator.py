@@ -6,10 +6,16 @@
 
 import os
 import time
+import sys
+import shutil
+import subprocess
 import pyperclip
 from typing import List, Optional, Tuple
 from playwright.sync_api import Page, BrowserContext
+from interaction_manager import InteractionManager
 
+# 初始化交互管理器
+interaction_manager = InteractionManager()
 
 class DoubaoAIImageGenerator:
     """豆包AI图片生成器"""
@@ -27,12 +33,13 @@ class DoubaoAIImageGenerator:
         self.downloads_dir = os.path.join(os.getcwd(), "test-results", "doubao_images")
         os.makedirs(self.downloads_dir, exist_ok=True)
     
-    def generate_prompt_from_markdown(self, markdown_file: str) -> Optional[str]:
+    def generate_prompt_from_markdown(self, markdown_file: str, special_prompt: str = None) -> Optional[str]:
         """
         从Markdown文件生成文生图提示词
         
         Args:
             markdown_file: Markdown文件路径
+            special_prompt: 特殊提示词（可选）
             
         Returns:
             生成的提示词，失败时返回None
@@ -44,7 +51,7 @@ class DoubaoAIImageGenerator:
             self._upload_markdown_file(markdown_file)
             
             # 发送提示词生成请求
-            prompt_text = self._get_prompt_generation_text()
+            prompt_text = self._get_prompt_generation_text(special_prompt)
             self._send_prompt_request(prompt_text)
             
             # 获取AI回复的提示词
@@ -61,6 +68,41 @@ class DoubaoAIImageGenerator:
                 
         except Exception as e:
             print(f"❌ 生成提示词时出错: {e}")
+            return None
+
+    def generate_prompt_from_summary(self, summary_text: str, special_prompt: str = None) -> Optional[str]:
+        """
+        从摘要文本生成文生图提示词
+        
+        Args:
+            summary_text: 文章摘要文本
+            special_prompt: 特殊提示词（可选）
+            
+        Returns:
+            生成的提示词，失败时返回None
+        """
+        try:
+            print("🤖 开始根据摘要生成文生图提示词...")
+            
+            # 发送提示词生成请求
+            prompt_request = self._get_prompt_generation_text_from_summary(summary_text, special_prompt)
+            self._send_prompt_request(prompt_request)
+            
+            # 获取AI回复的提示词
+            prompt_result = self._get_ai_response()
+            
+            if prompt_result:
+                # 保存提示词到文件（这里没有markdown文件路径，暂时使用时间戳命名）
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                self._save_prompt_to_file(prompt_result, f"summary_prompt_{timestamp}.txt")
+                print(f"✅ 提示词生成成功: {prompt_result[:100]}...")
+                return prompt_result
+            else:
+                print("❌ 提示词生成失败")
+                return None
+                
+        except Exception as e:
+            print(f"❌ 根据摘要生成提示词时出错: {e}")
             return None
     
     def generate_images_with_prompt(self, prompt: str, aspect_ratio: str = "16:9") -> List[str]:
@@ -80,15 +122,12 @@ class DoubaoAIImageGenerator:
             # 选择豆包AI的模式为思考模式
             # self.select_ai_mode("思考")
 
-            # 切换到图片生成技能
-            self._switch_to_image_generation_skill()
+            # 切换到图片生成技能 (根据用户要求移除)
+            # self._switch_to_image_generation_skill()
 
             # 在聊天输入框中输入提示词，不发送
             self._fill_prompt_only(prompt)
             
-            # 设置图片比例
-            self._set_image_aspect_ratio(aspect_ratio)
-
             # 发送图片生成请求
             self._send_image_generation_request(prompt)
             
@@ -109,29 +148,37 @@ class DoubaoAIImageGenerator:
             print(f"❌ 生成图片时出错: {e}")
             return []
     
-    def generate_images_from_markdown(self, markdown_file: str, aspect_ratio: str = "16:9") -> Tuple[Optional[str], List[str]]:
+    def generate_images_from_markdown(self, markdown_file: str, aspect_ratio: str = "16:9", special_prompt: str = None) -> Tuple[Optional[str], List[str]]:
         """
         从Markdown文件生成图片（完整流程）
         
         Args:
             markdown_file: Markdown文件路径
             aspect_ratio: 图片比例，默认为"16:9"
+            special_prompt: 特殊提示词（可选）
             
         Returns:
             (提示词, 图片文件路径列表)
         """
         try:
-            print("🚀 开始完整的图片生成流程...")
+            print("🚀 开始完整的图片生成流程（基于Markdown文件）...")
             
-            # 选择豆包AI的模式为思考模式
-            self.select_ai_mode("思考")
-
+            # 强制跳转到豆包聊天页面，确保环境纯净
+            print("🔄 跳转到豆包聊天页面...")
+            self.page.goto("https://www.doubao.com/chat/")
+            try:
+                self.page.wait_for_load_state("networkidle")
+            except:
+                pass
+            
             # 步骤1：生成提示词
-            prompt = self.generate_prompt_from_markdown(markdown_file)
+            # 不再选择思考模式，直接使用默认对话
+            prompt = self.generate_prompt_from_markdown(markdown_file, special_prompt)
             if not prompt:
                 return None, []
             
-            self._exit_prompt_generation_view()
+            # 不需要退出提示词生成界面，因为没有进入特殊模式
+            # self._exit_prompt_generation_view()
 
             # 步骤2：生成图片
             image_files = self.generate_images_with_prompt(prompt, aspect_ratio)
@@ -142,35 +189,197 @@ class DoubaoAIImageGenerator:
             print(f"❌ 完整流程执行失败: {e}")
             return None, []
     
+    def generate_images_from_summary(self, summary_text: str, aspect_ratio: str = "16:9", special_prompt: str = None) -> Tuple[Optional[str], List[str]]:
+        """
+        从摘要文本生成图片（完整流程）
+        
+        Args:
+            summary_text: 文章摘要
+            aspect_ratio: 图片比例，默认为"16:9"
+            special_prompt: 特殊提示词（可选）
+            
+        Returns:
+            (提示词, 图片文件路径列表)
+        """
+        try:
+            print("🚀 开始完整的图片生成流程（基于摘要）...")
+            
+            # 强制跳转到豆包聊天页面，确保环境纯净
+            print("🔄 跳转到豆包聊天页面...")
+            self.page.goto("https://www.doubao.com/chat/")
+            try:
+                self.page.wait_for_load_state("networkidle")
+            except:
+                pass
+
+            # 步骤1：生成提示词
+            # 不再选择思考模式，直接使用默认对话
+            prompt = self.generate_prompt_from_summary(summary_text, special_prompt)
+            if not prompt:
+                return None, []
+            
+            # 不需要退出提示词生成界面，因为没有进入特殊模式
+            # self._exit_prompt_generation_view()
+
+            # 步骤2：生成图片
+            image_files = self.generate_images_with_prompt(prompt, aspect_ratio)
+            
+            return prompt, image_files
+            
+        except Exception as e:
+            print(f"❌ 完整流程执行失败: {e}")
+            return None, []
+
     def _upload_markdown_file(self, markdown_file: str) -> None:
         """上传Markdown文件"""
-        print("📤 上传Markdown文件...")
-        
+        print("📤 上传Markdown文件 (Managed)...")
+        self._paste_file_to_chat_input(markdown_file)
+        print("✅ Markdown文件上传成功")
+
+    def _copy_file_to_clipboard(self, file_path: str) -> bool:
+        if not file_path:
+            print("⚠️ 未提供文件路径，跳过复制到剪贴板")
+            return False
+        if not os.path.exists(file_path):
+            print(f"❌ 文件不存在: {file_path}")
+            return False
+        if not sys.platform.startswith("win"):
+            print("⚠️ 当前系统非Windows，跳过复制到剪贴板")
+            return False
+        shell_path = shutil.which("pwsh") or shutil.which("powershell")
+        if not shell_path:
+            print("❌ 未找到PowerShell，无法复制文件到剪贴板")
+            return False
+        safe_path = file_path.replace("'", "''")
+        ps_command = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$files=New-Object System.Collections.Specialized.StringCollection; "
+            f"$files.Add('{safe_path}'); "
+            "[System.Windows.Forms.Clipboard]::SetFileDropList($files)"
+        )
+        result = subprocess.run(
+            [shell_path, "-NoProfile", "-STA", "-Command", ps_command],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            error_output = (result.stderr or result.stdout or "").strip()
+            print(f"❌ 复制文件到剪贴板失败: {error_output}")
+            return False
+        print("✅ 已复制文件到剪贴板")
+        return True
+
+    def _paste_file_to_chat_input(self, file_path: str) -> None:
+        print("📋 复制本地文件并粘贴上传...")
+        if not self._copy_file_to_clipboard(file_path):
+            raise Exception("复制文件到剪贴板失败")
+        def pre_click(page):
+            if "doubao.com/chat" not in page.url or "create-image" in page.url:
+                print("🔄 前置动作: 跳转到豆包聊天页面(强制重置)...")
+                page.goto("https://www.doubao.com/chat/")
+                try:
+                    page.wait_for_load_state("networkidle")
+                except:
+                    pass
         try:
-            upload_button = self.page.locator("button[data-dbx-name='button']", has=self.page.locator("svg path[d^='M17.3977']"))
-            if upload_button.count() > 0:
-                upload_button.first.click()
-            else:
-                self.page.get_by_test_id("upload_file_button").click()
-        except Exception as e:
-            print(f"⚠️  点击上传按钮失败，尝试旧选择器: {e}")
-            self.page.get_by_test_id("upload_file_button").click()
-        self.page.wait_for_timeout(1000)
+            interaction_manager.perform_interaction(
+                self.page,
+                interaction_id="doubao.chat.input_box_paste",
+                default_selector="div[data-testid='chat_input_input'] div[contenteditable='true']",
+                action_type="click",
+                precondition=pre_click
+            )
+        except Exception:
+            interaction_manager.perform_interaction(
+                self.page,
+                interaction_id="doubao.chat.input_box_paste_container",
+                default_selector="div[data-testid='chat_input_input']",
+                action_type="click",
+                precondition=pre_click
+            )
+        self.page.wait_for_timeout(500)
+        self.page.keyboard.press("Control+V")
+        self.page.wait_for_timeout(2000)
+        print("✅ 文件已粘贴到输入框")
+
+    def _click_upload_button(self) -> bool:
+        # 强制检查页面状态，不依赖 InteractionManager
+        if "doubao.com/chat" not in self.page.url or "create-image" in self.page.url:
+            print("🔄 [强制检查] 检测到页面状态不正确，跳转到豆包聊天页面...")
+            self.page.goto("https://www.doubao.com/chat/")
+            try:
+                self.page.wait_for_load_state("networkidle")
+            except:
+                pass
+
+        print("2️⃣ 点击文件上传按钮 (Managed)...")
+        default_selector = "button[data-dbx-name='button']:has(svg path[d^='M17.3977'])"
         
+        def precondition(page):
+            # 严格检查：必须包含 doubao.com/chat 且 不能是 create-image
+            # 因为 create-image 页面也有 doubao.com/chat 前缀，但 DOM 结构完全不同
+            if "doubao.com/chat" not in page.url or "create-image" in page.url:
+                print("🔄 前置动作: 跳转到豆包聊天页面(强制重置)...")
+                page.goto("https://www.doubao.com/chat/")
+                try:
+                    page.wait_for_load_state("networkidle")
+                except:
+                    pass
+
+        try:
+            interaction_manager.perform_interaction(
+                self.page,
+                interaction_id="doubao.chat.upload_button",
+                default_selector=default_selector,
+                action_type="click",
+                precondition=precondition
+            )
+            self.page.wait_for_timeout(1000)
+            return True
+        except Exception as e:
+            print(f"❌ 上传按钮交互失败: {e}")
+            return False
+
+    def _select_upload_file_option(self):
+        # 强制检查页面状态，不依赖 InteractionManager
+        if "doubao.com/chat" not in self.page.url or "create-image" in self.page.url:
+            print("🔄 [强制检查] 检测到页面状态不正确，跳转到豆包聊天页面...")
+            self.page.goto("https://www.doubao.com/chat/")
+            try:
+                self.page.wait_for_load_state("networkidle")
+            except:
+                pass
+
+        print("3️⃣ 选择上传文件选项 (Managed)...")
+        default_selector = "div[data-testid='upload_file_panel_upload_item']"
+        
+        def precondition(page):
+            if "doubao.com/chat" not in page.url or "create-image" in page.url:
+                print("🔄 前置动作: 跳转到豆包聊天页面(强制重置)...")
+                page.goto("https://www.doubao.com/chat/")
+            print("🔄 前置动作: 重新点击上传按钮...")
+            self._click_upload_button()
+            try:
+                page.wait_for_selector(default_selector, timeout=5000)
+            except:
+                pass
+
         with self.page.expect_file_chooser() as page_upload_file:
             try:
-                self.page.get_by_test_id("upload_file_panel_upload_item").click()
-            except Exception:
-                self.page.get_by_text("上传文件或图片").click()
-        page_upload_file = page_upload_file.value
-        page_upload_file.set_files(markdown_file)
-        self.page.wait_for_timeout(1000)
-        
-        print("✅ Markdown文件上传成功")
+                interaction_manager.perform_interaction(
+                    self.page,
+                    interaction_id="doubao.chat.upload_file_option",
+                    default_selector=default_selector,
+                    action_type="click",
+                    precondition=precondition
+                )
+            except Exception as e:
+                raise e
+        return page_upload_file.value
     
-    def _get_prompt_generation_text(self) -> str:
+    def _get_prompt_generation_text(self, special_prompt: str = None) -> str:
         """获取提示词生成请求文本"""
-        return """You are an expert in text-to-image prompt engineering.
+        base_prompt = """You are an expert in text-to-image prompt engineering.
 
 I will provide you with a Markdown file as an input attachment.
 This file contains an article written for publication on a WeChat Official Account.
@@ -184,47 +393,261 @@ Your task:
    - Aspect ratio: 16:9
    - Style: professional, clean, visually appealing
    - Subject should be clear and aligned with the article’s theme
-   - the image must not include any other text, code snippets, logos, or watermarks
-6. Output only the final prompt in English. Do not include explanations. """
+   - the image must not include any other text, code snippets, logos, or watermarks"""
+
+        if special_prompt:
+            base_prompt += f"\n6. **Special Requirement**: {special_prompt}"
+            base_prompt += "\n7. 输出一个符合要求的提示词。不要包含任何解释。 "
+        else:
+            base_prompt += "\n6. 输出一个符合要求的提示词。不要包含任何解释。 "
+            
+        return base_prompt
+
+    def _get_prompt_generation_text_from_summary(self, summary_text: str, special_prompt: str = None) -> str:
+        """获取基于摘要的提示词生成请求文本"""
+        base_prompt = f"""你是一个专业的文本到图像提示词工程师。
+
+我将提供你一个文章的摘要。
+
+你的任务是根据摘要生成一段符合要求的提示词。
+
+摘要:
+{summary_text}
+"""
+
+        if special_prompt:
+            base_prompt += f"\n4. **Special Requirement**: {special_prompt}"
+            base_prompt += "\n5. Output only the final prompt in English. Do not include explanations. "
+        else:
+            base_prompt += "\n4. Output only the final prompt in English. Do not include explanations. "
+            
+        return base_prompt
+
 
     def _fill_chat_input(self, text: str, step_label: str) -> None:
-        print(f"✍️  准备输入: {step_label}")
-        input_locator = self.page.get_by_test_id("chat_input_input")
-        input_locator.wait_for(state="visible", timeout=60000)
-        for _ in range(10):
-            if input_locator.is_enabled():
-                break
-            self.page.wait_for_timeout(500)
+        # 强制检查页面状态，不依赖 InteractionManager
+        if "doubao.com/chat" not in self.page.url or "create-image" in self.page.url:
+            print("🔄 [强制检查] 检测到页面状态不正确，跳转到豆包聊天页面...")
+            self.page.goto("https://www.doubao.com/chat/")
+            try:
+                self.page.wait_for_load_state("networkidle")
+            except:
+                pass
+
+        print(f"✍️  准备输入: {step_label} (Managed)...")
+        # 更新选择器以更精准地定位可编辑区域
+        # 以前是 "div[data-testid='chat_input_input']"
+        # 尝试定位 contenteditable 元素
+        default_selector = "div[data-testid='chat_input_input'] div[contenteditable='true']"
+        
+        def get_visible_editor():
+            editor = self.page.locator(default_selector)
+            for i in range(editor.count()):
+                el = editor.nth(i)
+                try:
+                    if el.is_visible():
+                        return el
+                except:
+                    pass
+            return None
+
+        def get_visible_container():
+            container = self.page.locator("div[data-testid='chat_input_input']")
+            for i in range(container.count()):
+                el = container.nth(i)
+                try:
+                    if el.is_visible():
+                        return el
+                except:
+                    pass
+            return None
+
+        def read_visible_content():
+            content = ""
+            try:
+                el = get_visible_editor()
+                if el:
+                    content = el.evaluate("el => el.innerText || el.textContent || ''")
+            except:
+                pass
+            if not content or not content.strip():
+                try:
+                    el = get_visible_container()
+                    if el:
+                        content = el.evaluate("el => el.innerText || el.textContent || ''")
+                except:
+                    pass
+            return content or ""
+
+        def precondition(page):
+            if "doubao.com/chat" not in page.url or "create-image" in page.url:
+                print("🔄 前置动作: 跳转到豆包聊天页面(强制重置)...")
+                page.goto("https://www.doubao.com/chat/")
+                try:
+                    page.wait_for_load_state("networkidle")
+                except:
+                    pass
+
         try:
-            input_locator.click(timeout=10000)
-        except Exception as e:
-            print(f"⚠️  点击输入框失败: {e}")
-        self.page.wait_for_timeout(200)
-        input_locator.fill(text)
-        self.page.wait_for_timeout(500)
-        try:
-            current_value = input_locator.input_value()
-            if not current_value:
-                input_locator.type(text, delay=20)
+            # 使用新ID以强制更新/使用新选择器
+            interaction_manager.perform_interaction(
+                self.page,
+                interaction_id="doubao.chat.input_box_v4",
+                default_selector=default_selector,
+                action_type="fill",
+                text=text,
+                precondition=precondition
+            )
+            
+            try:
+                self.page.wait_for_timeout(1000)
+                
+                try:
+                    el = get_visible_editor()
+                    if el:
+                        el.click(timeout=2000)
+                except:
+                    print("⚠️  点击 contenteditable 失败，尝试点击父级输入框...")
+                    try:
+                        parent = get_visible_container()
+                        if parent:
+                            parent.click(timeout=2000)
+                    except Exception as e:
+                        print(f"⚠️  点击父级输入框也失败 (忽略): {e}")
+                
                 self.page.wait_for_timeout(500)
-                current_value = input_locator.input_value()
-            if not current_value:
-                print("⚠️  输入框未接收到文本")
+                
+                content = read_visible_content()
+                if not content or not content.strip():
+                    print("⚠️  检测到输入框内容可能为空，跳过补输入，仅继续发送流程")
+            except Exception as e:
+                print(f"⚠️  验证输入内容时出错 (不影响流程): {e}")
+
         except Exception as e:
-            print(f"⚠️  输入校验失败: {e}")
+            print(f"❌ 输入框交互失败: {e}")
+            raise e
     
     def _send_prompt_request(self, prompt_text: str) -> None:
         """发送提示词生成请求"""
-        print("💬 发送提示词生成请求...")
+        # 强制检查页面状态，不依赖 InteractionManager
+        if "doubao.com/chat" not in self.page.url or "create-image" in self.page.url:
+            print("🔄 [强制检查] 检测到页面状态不正确，跳转到豆包聊天页面...")
+            self.page.goto("https://www.doubao.com/chat/")
+            try:
+                self.page.wait_for_load_state("networkidle")
+            except:
+                pass
+
+        print("💬 发送提示词生成请求 (Managed)...")
         self._fill_chat_input(prompt_text, "提示词")
-        
-        # 发送消息
-        self.page.get_by_test_id("chat_input_send_button").click()
-        print("✅ 提示词生成请求发送成功")
-        
-        # 等待AI回复
+        self._send_chat_message_with_validation("提示词生成请求")
+
         print("⏳ 等待AI回复（10秒）...")
         self.page.wait_for_timeout(10000)
+
+    def _send_chat_message_with_validation(self, label: str) -> None:
+        try:
+            send_btn_selector = "button[data-testid='chat_input_send_button']"
+            send_btn = self.page.locator(send_btn_selector)
+            send_target = None
+            for i in range(send_btn.count()):
+                el = send_btn.nth(i)
+                try:
+                    if el.is_visible():
+                        send_target = el
+                        break
+                except:
+                    pass
+            if send_target:
+                send_target.click()
+                self.page.wait_for_timeout(500)
+            else:
+                raise Exception("未找到可见的发送按钮")
+            print(f"✅ {label}发送成功")
+        except Exception as e:
+            print(f"❌ 发送按钮点击失败: {e}")
+            raise e
+
+        def read_input_content():
+            input_content = ""
+            textarea = self.page.locator("textarea[data-testid='chat_input_input']")
+            for i in range(textarea.count()):
+                el = textarea.nth(i)
+                try:
+                    if el.is_visible():
+                        input_content = el.evaluate("el => el.value || ''")
+                        if input_content is not None:
+                            return input_content
+                except:
+                    pass
+            editor = self.page.locator("div[data-testid='chat_input_input'] div[contenteditable='true']")
+            for i in range(editor.count()):
+                el = editor.nth(i)
+                try:
+                    if el.is_visible():
+                        input_content = el.evaluate("el => el.innerText || el.textContent || ''")
+                        if input_content and input_content.strip():
+                            return input_content
+                except:
+                    pass
+            input_box = self.page.locator("div[data-testid='chat_input_input']")
+            for i in range(input_box.count()):
+                el = input_box.nth(i)
+                try:
+                    if el.is_visible():
+                        input_content = el.evaluate("el => el.innerText || el.textContent || ''")
+                        if input_content and input_content.strip():
+                            return input_content
+                except:
+                    pass
+            return input_content
+
+        def is_send_button_disabled():
+            try:
+                send_btn = self.page.locator("button[data-testid='chat_input_send_button']")
+                for i in range(send_btn.count()):
+                    el = send_btn.nth(i)
+                    try:
+                        if el.is_visible():
+                            try:
+                                if el.is_disabled():
+                                    return True
+                            except:
+                                pass
+                            try:
+                                aria_disabled = el.get_attribute("aria-disabled")
+                                if aria_disabled == "true":
+                                    return True
+                            except:
+                                pass
+                            try:
+                                disabled_attr = el.get_attribute("disabled")
+                                if disabled_attr is not None:
+                                    return True
+                            except:
+                                pass
+                            break
+                    except:
+                        pass
+            except:
+                pass
+            return False
+
+        try:
+            input_content = ""
+            for _ in range(10):
+                input_content = read_input_content()
+                if not input_content or not input_content.strip():
+                    break
+                if is_send_button_disabled():
+                    input_content = ""
+                    break
+                self.page.wait_for_timeout(500)
+            if input_content and input_content.strip():
+                print("⚠️  发送后输入框仍有内容，但检测到发送状态，继续流程")
+        except Exception as e:
+            print(f"❌ 发送结果校验失败: {e}")
+            raise e
     
     def _fill_prompt_only(self, prompt_text: str) -> None:
         """仅在聊天输入框中输入提示词，不发送"""
@@ -235,15 +658,39 @@ Your task:
 
     def _get_ai_response(self) -> Optional[str]:
         """获取AI回复内容"""
+        # 强制检查页面状态，不依赖 InteractionManager
+        if "doubao.com/chat" not in self.page.url or "create-image" in self.page.url:
+            print("🔄 [强制检查] 检测到页面状态不正确，跳转到豆包聊天页面...")
+            self.page.goto("https://www.doubao.com/chat/")
+            try:
+                self.page.wait_for_load_state("networkidle")
+            except:
+                pass
+
         try:
-            print("📋 获取AI回复内容...")
+            print("📋 获取AI回复内容 (Managed)...")
             
             # 点击复制按钮
-            # 等待复制按钮出现，超时时间为2分钟
+            default_selector = "div[data-testid='receive_message']:last-of-type button[data-testid='message_action_copy']"
+            
+            def precondition(page):
+                if "doubao.com/chat" not in page.url or "create-image" in page.url:
+                    page.goto("https://www.doubao.com/chat/")
+            
+            # 等待复制按钮出现
             try:
-                copy_button = self.page.get_by_test_id("message_action_copy")
-                copy_button.wait_for(timeout=120000)  # 等待2分钟
-                copy_button.click()
+                self.page.wait_for_selector("button[data-testid='message_action_copy']", timeout=120000)
+            except:
+                pass
+
+            try:
+                interaction_manager.perform_interaction(
+                    self.page,
+                    interaction_id="doubao.chat.copy_button_last",
+                    default_selector=default_selector,
+                    action_type="click",
+                    precondition=precondition
+                )
                 self.page.wait_for_timeout(1000)
                 
                 # 从剪贴板读取内容
@@ -256,7 +703,7 @@ Your task:
                     print("⚠️  剪贴板内容为空")
                     return None
             except Exception as e:
-                print(f"⚠️  等待复制按钮超时或点击失败: {e}")
+                print(f"⚠️  复制按钮交互失败: {e}")
                 return None
                 
         except Exception as e:
@@ -314,59 +761,116 @@ Your task:
     
     def _switch_to_image_generation_skill(self) -> None:
         """切换到图片生成技能"""
-        print("🎯 切换到图片生成技能...")
+        print("🎯 切换到图片生成技能 (Managed)...")
+        
+        # 1. 输入切换指令
+        self._fill_chat_input("/图像生成", "切换图像生成")
+        
+        # 2. 按下回车键
+        default_selector = "div[data-testid='chat_input_input']"
+        
+        def precondition(page):
+            if "doubao.com/chat" not in page.url or "create-image" in page.url:
+                page.goto("https://www.doubao.com/chat/")
+            # 确保输入框有内容
+            try:
+                page.locator(default_selector).fill("/图像生成")
+            except:
+                pass
+
         try:
-            self._fill_chat_input("/图像生成", "切换图像生成")
-            input_locator = self.page.get_by_test_id("chat_input_input")
-            input_locator.press("Enter")
+            interaction_manager.perform_interaction(
+                self.page,
+                interaction_id="doubao.chat.input_enter",
+                default_selector=default_selector,
+                action_type="press",
+                key="Enter",
+                precondition=precondition
+            )
             self.page.wait_for_timeout(500)
         except Exception as e:
-            print(f"⚠️  输入切换指令失败: {e}")
+            print(f"⚠️  输入切换指令回车失败: {e}")
+            
+        # 3. 等待技能切换成功
         try:
             self.page.get_by_test_id("image-creation-chat-input-picture-ration-button").wait_for(state="visible", timeout=60000)
             print("✅ 图片生成技能切换成功")
         except Exception as e:
             print(f"❌ 图片生成技能切换失败: {e}")
             raise
-    
+
     def _set_image_aspect_ratio(self, aspect_ratio: str) -> None:
         """设置图片比例"""
-        print(f"📐 设置图片比例为 {aspect_ratio}...")
+        print(f"📐 设置图片比例为 {aspect_ratio} (Managed)...")
         
-        ratio_button = self.page.get_by_test_id("image-creation-chat-input-picture-ration-button")
-        ratio_button.wait_for(state="visible", timeout=60000)
-        ratio_button.scroll_into_view_if_needed()
-        ratio_button.click()
-        self.page.wait_for_timeout(500)
+        # 1. 点击比例按钮
+        ratio_btn_selector = "[data-testid='image-creation-chat-input-picture-ration-button']"
         
-        # 选择比例
+        def precondition_ratio_menu(page):
+            # 确保在图片生成模式
+            try:
+                if page.locator(ratio_btn_selector).count() == 0:
+                    print("🔄 前置动作: 尝试切换到图片生成模式...")
+                    page.locator("div[data-testid='chat_input_input']").fill("/图像生成")
+                    page.locator("div[data-testid='chat_input_input']").press("Enter")
+                    page.wait_for_timeout(2000)
+            except:
+                pass
+
+        try:
+            interaction_manager.perform_interaction(
+                self.page,
+                interaction_id="doubao.image.ratio_button",
+                default_selector=ratio_btn_selector,
+                action_type="click",
+                precondition=precondition_ratio_menu
+            )
+            self.page.wait_for_timeout(500)
+        except Exception as e:
+            print(f"❌ 打开比例菜单失败: {e}")
+            raise e
+        
+        # 2. 选择比例选项
+        # 根据比例确定选项文本
         if aspect_ratio == "16:9":
-            self.page.get_by_text("16:9 桌面壁纸，风景").click()
+            option_text = "16:9 桌面壁纸，风景"
         elif aspect_ratio == "9:16":
-            self.page.get_by_text("9:16 手机壁纸，人像").click()
+            option_text = "9:16 手机壁纸，人像"
         elif aspect_ratio == "4:3":
-            self.page.get_by_text("4:3 文章配图，插画").click()
+            option_text = "4:3 文章配图，插画"
         else:
-            self.page.get_by_text("16:9 桌面壁纸，风景").click()
+            option_text = "16:9 桌面壁纸，风景"
+            
+        option_selector = f"text='{option_text}'"
         
-        self.page.wait_for_timeout(1000)
-        print(f"✅ 图片比例 {aspect_ratio} 设置成功")
-    
+        def precondition_option_select(page):
+            # 确保菜单已打开
+            precondition_ratio_menu(page)
+            print("🔄 前置动作: 重新点击比例按钮...")
+            page.locator(ratio_btn_selector).click()
+
+        try:
+            interaction_manager.perform_interaction(
+                self.page,
+                interaction_id=f"doubao.image.ratio_option_{aspect_ratio.replace(':', '_')}",
+                default_selector=option_selector,
+                action_type="click",
+                precondition=precondition_option_select
+            )
+            self.page.wait_for_timeout(1000)
+            print(f"✅ 图片比例 {aspect_ratio} 设置成功")
+        except Exception as e:
+            print(f"❌ 选择比例选项失败: {e}")
+            # 尝试备用点击
+            try:
+                self.page.get_by_text(option_text).click()
+            except:
+                pass
+
     def _send_image_generation_request(self, prompt: str) -> None:
         """发送图片生成请求"""
-        print("🎨 发送图片生成请求...")
-        print("正在点击发送按钮")
-        # self.page.get_by_test_id("chat_input_input").locator("div").nth(1).click()
-        self.page.wait_for_timeout(500)
-        
-        # 输入提示词
-        # 这里也可以不用输入提示词，因为之前回答中已经包含了提示词，只需设置图片比例即可。
-        # self.page.get_by_test_id("chat_input_input").fill(prompt)
-        # self.page.wait_for_timeout(1000)
-        
-        # 发送请求
-        self.page.get_by_test_id("chat_input_send_button").click()
-        print("✅ 图片生成请求发送成功")
+        print("🎨 发送图片生成请求 (Managed)...")
+        self._send_chat_message_with_validation("图片生成请求")
     
     def _wait_for_image_generation(self) -> None:
         """等待图片生成完成"""
@@ -375,58 +879,134 @@ Your task:
         print("等待50秒")
         self.page.wait_for_timeout(50000)
 
+    def _scroll_to_bottom(self, page=None):
+        """滚动到底部以加载更多内容"""
+        p = page or self.page
+        print("⬇️ 滚动页面到底部...")
+        try:
+            p.locator("body").click()
+            last_height = p.evaluate("() => document.body.scrollHeight")
+            for _ in range(12):
+                p.mouse.wheel(0, 2400)
+                p.wait_for_timeout(300)
+            for _ in range(4):
+                p.keyboard.press("PageDown")
+                p.wait_for_timeout(300)
+            p.keyboard.press("End")
+            p.wait_for_timeout(800)
+            current_height = p.evaluate("() => document.body.scrollHeight")
+            if current_height == last_height:
+                p.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+                p.wait_for_timeout(800)
+        except Exception as e:
+            print(f"⚠️  滚动页面失败: {e}")
+
     def _download_generated_images(self) -> List[str]:
         """下载生成的图片"""
-        print("📥 开始下载生成的图片...")
+        print("📥 开始下载生成的图片 (Managed)...")
         
         try:
-            print("⬇️ 向下滚动以显示下载入口...")
-            try:
-                self.page.locator("body").click()
-                last_height = self.page.evaluate("() => document.body.scrollHeight")
-                for _ in range(12):
-                    self.page.mouse.wheel(0, 2400)
-                    self.page.wait_for_timeout(300)
-                for _ in range(4):
-                    self.page.keyboard.press("PageDown")
-                    self.page.wait_for_timeout(300)
-                self.page.keyboard.press("End")
-                self.page.wait_for_timeout(800)
-                current_height = self.page.evaluate("() => document.body.scrollHeight")
-                if current_height == last_height:
-                    self.page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-                    self.page.wait_for_timeout(800)
-            except Exception as e:
-                print(f"⚠️  滚动页面失败: {e}")
-            print("等待下载入口出现，超时时间为1分钟")
-            more_buttons = self.page.get_by_test_id("message_action_more")
-            more_buttons.wait_for(state="visible", timeout=60000)
-            print("下载入口出现")
+            # 1. 滚动页面
+            self._scroll_to_bottom()
             
+            print("等待下载入口出现，超时时间为1分钟")
+            # 2. 点击更多按钮
+            more_btn_selector = "[data-testid='message_action_more']"
+            
+            def precondition_more_btn(page):
+                self._scroll_to_bottom(page)
+            
+            try:
+                # 确保至少有一个 more 按钮可见
+                self.page.wait_for_selector(more_btn_selector, timeout=60000)
+                
+                # 我们通常需要点击最后一个
+                # InteractionManager 默认操作 first，所以我们需要构造一个指向最后一个的选择器
+                # 或者我们接受 InteractionManager 操作 first，但在 precondition 中我们尽量定位
+                # 由于 CSS 选择器 :last-of-type 可能不准确，最好的方式是使用 locator.last
+                # 但 InteractionManager 的 execute_action 默认是用 locator.first
+                # 我们可以传递一个特殊的 index 参数给 execute_action? 不支持。
+                # 我们可以构造一个 xpath 选择器指向最后一个
+                last_more_selector = "xpath=(//*[@data-testid='message_action_more'])[last()]"
+                
+                interaction_manager.perform_interaction(
+                    self.page,
+                    interaction_id="doubao.image.more_button_last",
+                    default_selector=last_more_selector,
+                    action_type="click",
+                    precondition=precondition_more_btn
+                )
+                self.page.wait_for_timeout(500)
+            except Exception as e:
+                print(f"❌ 点击更多按钮失败: {e}")
+                # 尝试直接点击最后一个
+                try:
+                    self.page.get_by_test_id("message_action_more").last.click()
+                except:
+                    return []
+
+            # 3. 点击下载菜单项
+            download_item_selector = "[data-testid='message_action_download_dropdown']"
+            
+            def precondition_download_item(page):
+                precondition_more_btn(page)
+                # 点击最后一个更多按钮
+                page.locator("xpath=(//*[@data-testid='message_action_more'])[last()]").click()
+
             # 设置下载事件监听器
             downloads = []
-            
             def handle_download(download):
                 downloads.append(download)
                 print(f"📥 检测到下载: {download.suggested_filename}")
             
             self.page.on("download", handle_download)
-            
-            print("🖱️  打开下载菜单...")
-            more_buttons.last.click()
-            self.page.wait_for_timeout(500)
-            download_menu_items = self.page.get_by_test_id("message_action_download_dropdown")
-            if download_menu_items.count() == 0:
-                print("⚠️  未找到下载菜单项")
-                return []
-            download_menu_items.first.click()
-            self.page.wait_for_timeout(500)
+
             try:
-                download_confirm_button = self.page.get_by_role("button", name="下载")
-                download_confirm_button.wait_for(state="visible", timeout=10000)
-                download_confirm_button.click()
+                interaction_manager.perform_interaction(
+                    self.page,
+                    interaction_id="doubao.image.download_menu_item",
+                    default_selector=download_item_selector,
+                    action_type="click",
+                    precondition=precondition_download_item
+                )
+                self.page.wait_for_timeout(500)
+            except Exception as e:
+                print(f"❌ 点击下载菜单项失败: {e}")
+                return []
+
+            # 4. 点击确认下载按钮
+            confirm_btn_selector = "button:has-text('下载')"
+            # 或者是 role=button, name='下载'
+            
+            def precondition_confirm_btn(page):
+                precondition_download_item(page)
+                page.locator(download_item_selector).click()
+
+            try:
+                # 可能会有多个下载按钮（历史消息的），我们需要确保是弹窗里的那个
+                # 通常弹窗里的按钮是最后出现的，或者在特定容器里
+                # 简单起见，使用 text='下载' 且可见的
+                # 注意：这里可能会误点到其他的“下载”文字
+                # 更好的选择器： div[class*='modal'] button:has-text('下载')
+                # 但不确定 modal 的类名。
+                # 尝试使用 role
+                # default_selector = "button:has-text('下载')"
+                
+                interaction_manager.perform_interaction(
+                    self.page,
+                    interaction_id="doubao.image.download_confirm",
+                    default_selector=confirm_btn_selector,
+                    action_type="click",
+                    precondition=precondition_confirm_btn
+                )
             except Exception as e:
                 print(f"⚠️  点击下载确认按钮失败: {e}")
+                # 尝试直接点击
+                try:
+                    self.page.get_by_role("button", name="下载").click()
+                except:
+                    pass
+            
             # 等待下载完成
             print("⏳ 等待下载完成...")
             self.page.wait_for_timeout(30000)  # 等待30秒
@@ -479,84 +1059,42 @@ Your task:
             print(f"❌ 无效的模式参数: {mode}")
             print(f"有效选项: {', '.join(valid_modes)}")
             return False
+            
+        print(f"🔄 正在选择豆包AI的'{mode}'模式 (Managed)...")
         
+        # 定义默认选择器 - 优先尝试 tabindex=0 的 span，通常是可交互元素
+        default_selector = f"span[tabindex='0']:has-text('{mode}')"
+        
+        def precondition(page):
+            if "doubao.com/chat" not in page.url or "create-image" in page.url:
+                print("🔄 前置动作: 跳转到豆包聊天页面(强制重置)...")
+                page.goto("https://www.doubao.com/chat/")
+                try:
+                    page.wait_for_load_state("networkidle")
+                except:
+                    pass
+
         try:
-            print(f"🔄 正在选择豆包AI的'{mode}'模式...")
-            
-            # 方法1：通过文本内容定位指定模式按钮
-            try:
-                mode_button = self.page.get_by_text(mode, exact=True)
-                if mode_button.count() > 0:
-                    mode_button.click()
-                    self.page.wait_for_timeout(1000)
-                    print(f"✅ 通过文本定位成功选择'{mode}'模式")
-                    return True
-            except Exception as e1:
-                print(f"⚠️  方法1失败: {e1}")
-            
-            # 方法2：通过CSS类名和文本内容定位
-            try:
-                mode_button = self.page.locator(f"span.button-mE6AaR:has-text('{mode}')")
-                if mode_button.count() > 0:
-                    mode_button.click()
-                    self.page.wait_for_timeout(1000)
-                    print(f"✅ 通过CSS类名和文本内容定位成功选择'{mode}'模式")
-                    return True
-            except Exception as e2:
-                print(f"⚠️  方法2失败: {e2}")
-            
-            # 方法3：通过包含指定文本的span元素定位
-            try:
-                mode_button = self.page.locator(f"span:has-text('{mode}')")
-                if mode_button.count() > 0:
-                    # 过滤出具有button-mE6AaR类的元素
-                    for i in range(mode_button.count()):
-                        element = mode_button.nth(i)
-                        if "button-mE6AaR" in element.get_attribute("class", ""):
-                            element.click()
-                            self.page.wait_for_timeout(1000)
-                            print(f"✅ 通过span元素定位成功选择'{mode}'模式")
-                            return True
-            except Exception as e3:
-                print(f"⚠️  方法3失败: {e3}")
-            
-            # 方法4：通过tabindex属性定位（查找所有可点击的按钮）
-            try:
-                all_buttons = self.page.locator("span[tabindex='0']")
-                if all_buttons.count() > 0:
-                    for i in range(all_buttons.count()):
-                        button = all_buttons.nth(i)
-                        button_text = button.text_content()
-                        if button_text == mode:
-                            button.click()
-                            self.page.wait_for_timeout(1000)
-                            print(f"✅ 通过tabindex属性定位成功选择'{mode}'模式")
-                            return True
-            except Exception as e4:
-                print(f"⚠️  方法4失败: {e4}")
-            
-            # 方法5：兜底方案 - 查找所有包含指定文本的元素
-            try:
-                all_mode_elements = self.page.locator(f"*:has-text('{mode}')")
-                if all_mode_elements.count() > 0:
-                    # 遍历所有包含指定文本的元素，找到可点击的按钮
-                    for i in range(all_mode_elements.count()):
-                        element = all_mode_elements.nth(i)
-                        element_class = element.get_attribute("class", "")
-                        if "button-mE6AaR" in element_class or "button" in element_class:
-                            element.click()
-                            self.page.wait_for_timeout(1000)
-                            print(f"✅ 通过兜底方案成功选择'{mode}'模式")
-                            return True
-            except Exception as e5:
-                print(f"⚠️  方法5失败: {e5}")
-            
-            print(f"❌ 所有方法都无法找到'{mode}'模式按钮")
-            return False
-            
+            interaction_manager.perform_interaction(
+                self.page,
+                interaction_id=f"doubao.chat.mode_selection_{mode}",
+                default_selector=default_selector,
+                action_type="click",
+                precondition=precondition
+            )
+            print(f"✅ 成功选择'{mode}'模式")
+            return True
         except Exception as e:
-            print(f"❌ 选择'{mode}'模式时出错: {e}")
-            return False
+            print(f"❌ 选择'{mode}'模式交互失败: {e}")
+            # 尝试备用选择器 - 纯文本匹配
+            try:
+                print(f"⚠️  尝试备用选择器: text='{mode}'")
+                self.page.click(f"text='{mode}'")
+                print(f"✅ 通过备用选择器成功选择'{mode}'模式")
+                return True
+            except Exception as e2:
+                print(f"❌ 备用选择器也失败: {e2}")
+                return False
 
     def select_thinking_mode(self) -> bool:
         """

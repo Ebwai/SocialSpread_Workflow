@@ -10,11 +10,26 @@ from pathlib import Path
 from playwright.sync_api import Page, expect
 # import pyperclip
 
+# 导入交互管理器
+from interaction_manager import InteractionManager
+
 # 导入字数统计功能
 from word_counter_sdk import validate_and_clean_text, count_characters
 
-# 导入钉钉SDK
-from dingtalk_sdk import create_sdk
+# 初始化交互管理器
+interaction_manager = InteractionManager()
+
+def open_doubao_chat_page_precondition(page):
+    """
+    豆包聊天页面的前置条件：确保在聊天页面
+    """
+    if "doubao.com/chat" not in page.url:
+        print("🔄 前置动作: 跳转到豆包聊天页面...")
+        page.goto("https://www.doubao.com/chat/")
+        try:
+            page.wait_for_load_state("networkidle", timeout=10000)
+        except:
+            pass
 
 # 尝试加载.env文件中的环境变量
 try:
@@ -50,30 +65,25 @@ def get_screen_size():
     return viewport["width"], viewport["height"]
 
 def fill_doubao_chat_input(page, text, step_label):
-    print(f"✍️  准备输入: {step_label}")
-    input_locator = page.get_by_test_id("chat_input_input")
-    input_locator.wait_for(state="visible", timeout=60000)
-    for _ in range(10):
-        if input_locator.is_enabled():
-            break
-        page.wait_for_timeout(500)
+    print(f"✍️  准备输入: {step_label} (Managed)...")
+    
+    default_selector = "div[data-testid='chat_input_input']"
+    
+    def pre_fill(p):
+        open_doubao_chat_page_precondition(p)
+        
     try:
-        input_locator.click(timeout=10000)
+        interaction_manager.perform_interaction(
+            page,
+            interaction_id="doubao.chat.input_box",
+            default_selector=default_selector,
+            action_type="fill",
+            text=text,
+            precondition=pre_fill
+        )
     except Exception as e:
-        print(f"⚠️  点击输入框失败: {e}")
-    page.wait_for_timeout(200)
-    input_locator.fill(text)
-    page.wait_for_timeout(500)
-    try:
-        current_value = input_locator.input_value()
-        if not current_value:
-            input_locator.type(text, delay=20)
-            page.wait_for_timeout(500)
-            current_value = input_locator.input_value()
-        if not current_value:
-            print("⚠️  输入框未接收到文本")
-    except Exception as e:
-        print(f"⚠️  输入校验失败: {e}")
+        print(f"❌ 输入框交互失败: {e}")
+        raise e
 
 def open_doubao_chat_page(browser_context):
     print("1️⃣ 打开豆包AI聊天页面...")
@@ -95,6 +105,239 @@ def open_doubao_chat_page(browser_context):
     except Exception as e:
         print(f"⚠️ 输入框未就绪: {e}")
     return page_doubao
+
+def click_doubao_upload_button(page_doubao):
+    print("2️⃣ 点击文件上传按钮 (Managed)...")
+    
+    # 默认选择器
+    default_selector = "button[data-dbx-name='button']:has(svg path[d^='M17.3977'])"
+    
+    try:
+        interaction_manager.perform_interaction(
+            page_doubao,
+            interaction_id="doubao.chat.upload_button",
+            default_selector=default_selector,
+            action_type="click",
+            precondition=open_doubao_chat_page_precondition
+        )
+        page_doubao.wait_for_timeout(1000)
+        return True
+    except Exception as e:
+        print(f"❌ 上传按钮交互失败: {e}")
+        return False
+
+def select_doubao_upload_file_option(page_doubao):
+    print("3️⃣ 选择上传文件选项 (Managed)...")
+    
+    # 默认选择器
+    default_selector = "div[data-testid='upload_file_panel_upload_item']"
+    
+    def pre_upload_option(p):
+        open_doubao_chat_page_precondition(p)
+        print("🔄 前置动作: 重新点击上传按钮...")
+        click_doubao_upload_button(p)
+        # 等待选项面板出现
+        try:
+            p.wait_for_selector(default_selector, timeout=5000)
+        except:
+            pass
+
+    selector = interaction_manager.get_locator_selector("doubao.chat.upload_file_option", default_selector)
+    
+    with page_doubao.expect_file_chooser() as page_upload_file:
+        try:
+            interaction_manager.perform_interaction(
+                page_doubao,
+                interaction_id="doubao.chat.upload_file_option",
+                default_selector=default_selector,
+                action_type="click",
+                precondition=pre_upload_option
+            )
+        except Exception as e:
+             # 如果 perform_interaction 内部重试成功，这里不会抛出异常
+             # 如果重试失败，抛出异常
+             raise e
+             
+    return page_upload_file.value
+
+def click_doubao_send_button(page_doubao):
+    print("7️⃣ 点击发送按钮 (Managed)...")
+    open_doubao_chat_page_precondition(page_doubao)
+    try:
+        send_btn_selector = "button[data-testid='chat_input_send_button']"
+        send_btn = page_doubao.locator(send_btn_selector)
+        send_target = None
+        for i in range(send_btn.count()):
+            el = send_btn.nth(i)
+            try:
+                if el.is_visible():
+                    send_target = el
+                    break
+            except:
+                pass
+        if send_target:
+            send_target.click()
+            page_doubao.wait_for_timeout(500)
+        else:
+            raise Exception("未找到可见的发送按钮")
+    except Exception as e:
+        print(f"❌ 发送按钮点击失败: {e}")
+        raise e
+
+    def read_input_content():
+        input_content = ""
+        textarea = page_doubao.locator("textarea[data-testid='chat_input_input']")
+        for i in range(textarea.count()):
+            el = textarea.nth(i)
+            try:
+                if el.is_visible():
+                    input_content = el.evaluate("el => el.value || ''")
+                    if input_content is not None:
+                        return input_content
+            except:
+                pass
+        editor = page_doubao.locator("div[data-testid='chat_input_input'] div[contenteditable='true']")
+        for i in range(editor.count()):
+            el = editor.nth(i)
+            try:
+                if el.is_visible():
+                    input_content = el.evaluate("el => el.innerText || el.textContent || ''")
+                    if input_content and input_content.strip():
+                        return input_content
+            except:
+                pass
+        input_box = page_doubao.locator("div[data-testid='chat_input_input']")
+        for i in range(input_box.count()):
+            el = input_box.nth(i)
+            try:
+                if el.is_visible():
+                    input_content = el.evaluate("el => el.innerText || el.textContent || ''")
+                    if input_content and input_content.strip():
+                        return input_content
+            except:
+                pass
+        return input_content
+
+    def is_send_button_disabled():
+        try:
+            send_btn = page_doubao.locator("button[data-testid='chat_input_send_button']")
+            for i in range(send_btn.count()):
+                el = send_btn.nth(i)
+                try:
+                    if el.is_visible():
+                        try:
+                            if el.is_disabled():
+                                return True
+                        except:
+                            pass
+                        try:
+                            aria_disabled = el.get_attribute("aria-disabled")
+                            if aria_disabled == "true":
+                                return True
+                        except:
+                            pass
+                        try:
+                            disabled_attr = el.get_attribute("disabled")
+                            if disabled_attr is not None:
+                                return True
+                        except:
+                            pass
+                        break
+                except:
+                    pass
+        except:
+            pass
+        return False
+
+    try:
+        input_content = ""
+        for _ in range(10):
+            input_content = read_input_content()
+            if not input_content or not input_content.strip():
+                break
+            if is_send_button_disabled():
+                input_content = ""
+                break
+            page_doubao.wait_for_timeout(500)
+        if input_content and input_content.strip():
+            print("⚠️  发送后输入框仍有内容，但检测到发送状态，继续流程")
+    except Exception as e:
+        print(f"❌ 发送结果校验失败: {e}")
+        raise e
+
+def click_doubao_copy_button(page_doubao):
+    print("9️⃣ 点击复制按钮 (Managed)...")
+    # 选择最后一个消息的复制按钮
+    default_selector = "div[data-testid='receive_message']:last-of-type button[data-testid='message_action_copy']"
+    
+    def pre_copy(p):
+        open_doubao_chat_page_precondition(p)
+    
+    try:
+        # 增加隐式等待，因为生成需要时间
+        page_doubao.wait_for_selector("button[data-testid='message_action_copy']", timeout=120000)
+    except:
+        pass
+
+    return interaction_manager.perform_interaction(
+        page_doubao,
+        interaction_id="doubao.chat.copy_button_last",
+        default_selector=default_selector,
+        action_type="click",
+        precondition=pre_copy
+    )
+
+def fill_xiaohongshu_title(page, title):
+    print("填写小红书标题 (Managed)...")
+    default_selector = "input[placeholder*='标题']"
+    
+    def pre_fill(p):
+        if "creator.xiaohongshu.com/publish" not in p.url:
+             print("🔄 前置动作: 跳转到小红书发布页...")
+             p.goto("https://creator.xiaohongshu.com/publish/publish?from=menu&target=article")
+             try:
+                 p.wait_for_load_state("networkidle")
+             except:
+                 pass
+
+    try:
+        interaction_manager.perform_interaction(
+            page,
+            interaction_id="xiaohongshu.publish.title_input",
+            default_selector=default_selector,
+            action_type="fill",
+            text=title,
+            precondition=pre_fill
+        )
+    except Exception as e:
+        print(f"❌ 小红书标题填写失败: {e}")
+        raise e
+
+def fill_xiaohongshu_content(page, content):
+    print("填写小红书正文 (Managed)...")
+    default_selector = "div[contenteditable='true']"
+    
+    def pre_fill(p):
+        if "creator.xiaohongshu.com/publish" not in p.url:
+             print("🔄 前置动作: 跳转到小红书发布页...")
+             p.goto("https://creator.xiaohongshu.com/publish/publish?from=menu&target=article")
+             try:
+                 p.wait_for_load_state("networkidle")
+             except:
+                 pass
+
+    try:
+        interaction_manager.perform_interaction(
+            page,
+            interaction_id="xiaohongshu.publish.content_input",
+            default_selector=default_selector,
+            action_type="fill",
+            text=content,
+            precondition=pre_fill
+        )
+    except Exception as e:
+        print(f"❌ 小红书正文填写失败: {e}")
+        raise e
 
 PLATFORM_STYLE_PROMPT_ENV_KEYS = {
     "wechat": "PLATFORM_STYLE_PROMPT_WECHAT",
@@ -123,46 +366,96 @@ def get_platform_style_prompt(platform_key):
         return None
     return normalize_prompt_value(os.getenv(env_key))
 
-def build_platform_rewrite_prompt(platform_prompt, personal_prompt):
+def get_publish_special_prompt():
+    return normalize_prompt_value(os.getenv("PUBLISH_SPECIAL_PROMPT"))
+
+def build_platform_rewrite_prompt(platform_prompt, personal_prompt, special_prompt):
     return (
         "你是专业内容编辑。我会提供一份Markdown文档作为附件。\n"
         f"平台风格要求：{platform_prompt}\n"
         f"个人写作风格：{personal_prompt}\n"
+        f"本次发布特殊要求：{special_prompt}\n"
         "请在不改变原意的前提下改写正文，使其更适合该平台发布，保持信息准确、逻辑清晰、结构易读。"
         "只输出最终正文，不要输出标题、解释、步骤或多余说明。"
     )
 
-def generate_rewritten_content_with_doubao(browser_context, markdown_file, platform_key, platform_prompt, personal_prompt):
+def get_cache_dir(markdown_file):
+    """获取Markdown文件所属目录下的AI内容缓存目录"""
+    md_path = Path(markdown_file)
+    cache_dir = md_path.parent / "ai_generated_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+def get_cached_content(markdown_file, filename):
+    """从本地缓存读取内容"""
+    cache_path = get_cache_dir(markdown_file) / filename
+    if cache_path.exists():
+        print(f"📦 发现本地缓存内容: {filename}")
+        with open(cache_path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return None
+
+def save_to_cache(markdown_file, filename, content):
+    """将内容保存到本地缓存"""
+    cache_path = get_cache_dir(markdown_file) / filename
+    with open(cache_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print(f"💾 内容已保存到本地缓存: {filename}")
+
+def get_cached_image(markdown_file):
+    """从本地缓存查找封面图"""
+    cache_dir = get_cache_dir(markdown_file)
+    # 查找以 cover_image 开头的图片文件
+    for ext in ['.png', '.jpg', '.jpeg', '.webp']:
+        image_path = cache_dir / f"cover_image{ext}"
+        if image_path.exists():
+            print(f"📦 发现本地缓存封面图: {image_path.name}")
+            return str(image_path)
+    return None
+
+def save_image_to_cache(markdown_file, image_path):
+    """将封面图保存到本地缓存"""
+    if not image_path or not os.path.exists(image_path):
+        return None
+    
+    cache_dir = get_cache_dir(markdown_file)
+    ext = os.path.splitext(image_path)[1]
+    target_path = cache_dir / f"cover_image{ext}"
+    
+    import shutil
+    shutil.copy2(image_path, target_path)
+    print(f"💾 封面图已保存到本地缓存: {target_path.name}")
+    return str(target_path)
+
+def generate_rewritten_content_with_doubao(browser_context, markdown_file, platform_key, platform_prompt, personal_prompt, special_prompt):
+    # 映射平台键到更友好的文件名
+    platform_name_map = {
+        "wechat": "weixin",
+        "xiaohongshu_newspic": "xhs",
+        "zhihu": "zhihu",
+        "csdn": "csdn",
+        "51cto": "51cto",
+        "cnblogs": "cnblogs",
+        "douyin_newspic": "douyin",
+        "kuaishou_newspic": "kuaishou",
+        "bilibili_newspic": "bilibili"
+    }
+    friendly_name = platform_name_map.get(platform_key, platform_key)
+    cache_filename = f"{friendly_name}正文.txt"
+    
+    # 检查缓存
+    cached_content = get_cached_content(markdown_file, cache_filename)
+    if cached_content:
+        return cached_content
+
     try:
         print(f"🤖 正在使用豆包AI改写平台正文: {platform_key}")
         page_doubao = open_doubao_chat_page(browser_context)
-        print("2️⃣ 点击文件上传按钮...")
-        try:
-            upload_button = page_doubao.locator("button[data-dbx-name='button']", has=page_doubao.locator("svg path[d^='M17.3977']"))
-            if upload_button.count() > 0:
-                upload_button.first.click()
-            else:
-                page_doubao.get_by_test_id("upload_file_button").click()
-        except Exception as e:
-            print(f"⚠️  点击上传按钮失败，尝试旧选择器: {e}")
-            page_doubao.get_by_test_id("upload_file_button").click()
-        page_doubao.wait_for_timeout(1000)
-        print("✅ 文件上传按钮点击成功")
 
-        print("3️⃣ 选择上传文件选项...")
-        with page_doubao.expect_file_chooser() as page_upload_file:
-            try:
-                page_doubao.get_by_test_id("upload_file_panel_upload_item").click()
-            except Exception:
-                page_doubao.get_by_text("上传文件或图片").click()
-        page_upload_file = page_upload_file.value
-        print("4️⃣ 上传Markdown文件...")
-        page_upload_file.set_files(markdown_file)
-        page_doubao.wait_for_timeout(1000)
-        print("✅ 上传选项选择成功")
+        paste_file_to_doubao(page_doubao, markdown_file)
 
         print("5️⃣ 输入改写提示词...")
-        prompt_text = build_platform_rewrite_prompt(platform_prompt, personal_prompt)
+        prompt_text = build_platform_rewrite_prompt(platform_prompt, personal_prompt, special_prompt)
         fill_doubao_chat_input(page_doubao, prompt_text, "改写提示词")
 
         print("⏳ 等待网络空闲...")
@@ -173,28 +466,22 @@ def generate_rewritten_content_with_doubao(browser_context, markdown_file, platf
             print(f"⚠️ 网络空闲等待超时: {e}")
 
         print("7️⃣ 发送消息...")
-        page_doubao.get_by_test_id("chat_input_send_button").click()
+        click_doubao_send_button(page_doubao)
         print("✅ 消息发送成功，等待AI回复...")
 
         print("8️⃣ 等待AI回复...")
-        print("🔄 等待复制按钮出现...")
-        copy_buttons = page_doubao.get_by_test_id("receive_message").get_by_test_id("message_action_copy")
-        copy_buttons.wait_for(state="visible", timeout=120000)
-
+        
         try:
             import pyperclip
-            copy_button_count = copy_buttons.count()
-            if copy_button_count > 0:
-                last_copy_button = copy_buttons.nth(copy_button_count - 1)
-                last_copy_button.click(timeout=10000)
-                page_doubao.wait_for_timeout(2000)
-                rewritten_text = pyperclip.paste().strip()
-                if rewritten_text:
-                    print(f"✅ 改写完成，正文长度: {len(rewritten_text)}")
-                    return rewritten_text
-                print("⚠️  剪贴板内容为空")
-                return None
-            print("⚠️  未找到复制按钮")
+            click_doubao_copy_button(page_doubao)
+            page_doubao.wait_for_timeout(2000)
+            rewritten_text = pyperclip.paste().strip()
+            if rewritten_text:
+                print(f"✅ 改写完成，正文长度: {len(rewritten_text)}")
+                # 保存到缓存
+                save_to_cache(markdown_file, cache_filename, rewritten_text)
+                return rewritten_text
+            print("⚠️  剪贴板内容为空")
             return None
         except ImportError:
             print("❌ 需要安装 pyperclip 库")
@@ -215,11 +502,13 @@ def generate_rewritten_content_with_doubao(browser_context, markdown_file, platf
         except:
             pass
 
-def generate_platform_rewrite_contents(browser_context, markdown_file, target_platforms):
+def generate_platform_rewrite_contents(browser_context, markdown_file, target_platforms, special_prompt=None):
     personal_prompt = get_personal_style_prompt()
     if not personal_prompt:
         print("❌ 未设置 PERSONAL_STYLE_PROMPT，无法进行平台改写")
         sys.exit(1)
+
+    special_prompt = normalize_prompt_value(special_prompt) or ""
 
     platform_prompts = {}
     for platform_key in target_platforms:
@@ -243,7 +532,8 @@ def generate_platform_rewrite_contents(browser_context, markdown_file, target_pl
             markdown_file=markdown_file,
             platform_key=platform_key,
             platform_prompt=platform_prompt,
-            personal_prompt=personal_prompt
+            personal_prompt=personal_prompt,
+            special_prompt=special_prompt
         )
         if not rewritten_text:
             print(f"❌ 平台改写失败: {platform_key}")
@@ -256,6 +546,24 @@ def get_platform_body_content(platform_key, summary, platform_rewrite_contents):
     if platform_rewrite_contents and platform_key in platform_rewrite_contents:
         print(f"✅ 使用平台改写正文: {platform_key}")
         return platform_rewrite_contents[platform_key]
+    
+    # 尝试从缓存中读取，即使rewrite_platform_content未启用
+    # 映射平台键到更友好的文件名
+    platform_name_map = {
+        "wechat": "weixin",
+        "xiaohongshu_newspic": "xhs",
+        "zhihu": "zhihu",
+        "csdn": "csdn",
+        "51cto": "51cto",
+        "cnblogs": "cnblogs",
+        "douyin_newspic": "douyin",
+        "kuaishou_newspic": "kuaishou",
+        "bilibili_newspic": "bilibili"
+    }
+    # 对于平台改写，我们需要知道markdown_file路径，但是这个函数没有传入。
+    # 我们暂时不在这里处理缓存读取，而是在generate_platform_rewrite_contents中已经处理了缓存
+    # 如果generate_platform_rewrite_contents返回了内容，这里直接使用
+    
     print(f"ℹ️ 使用默认摘要作为正文: {platform_key}")
     return summary
 
@@ -298,6 +606,66 @@ def copy_image_to_clipboard(image_path):
         return False
     print("✅ 已复制图片到剪贴板")
     return True
+
+def copy_file_to_clipboard(file_path):
+    if not file_path:
+        print("⚠️ 未提供文件路径，跳过复制到剪贴板")
+        return False
+    if not os.path.exists(file_path):
+        print(f"❌ 文件不存在: {file_path}")
+        return False
+    if not sys.platform.startswith("win"):
+        print("⚠️ 当前系统非Windows，跳过复制到剪贴板")
+        return False
+    shell_path = shutil.which("pwsh") or shutil.which("powershell")
+    if not shell_path:
+        print("❌ 未找到PowerShell，无法复制文件到剪贴板")
+        return False
+    safe_path = file_path.replace("'", "''")
+    ps_command = (
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "$files=New-Object System.Collections.Specialized.StringCollection; "
+        f"$files.Add('{safe_path}'); "
+        "[System.Windows.Forms.Clipboard]::SetFileDropList($files)"
+    )
+    result = subprocess.run(
+        [shell_path, "-NoProfile", "-STA", "-Command", ps_command],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        error_output = (result.stderr or result.stdout or "").strip()
+        print(f"❌ 复制文件到剪贴板失败: {error_output}")
+        return False
+    print("✅ 已复制文件到剪贴板")
+    return True
+
+def paste_file_to_doubao(page_doubao, file_path):
+    print("📋 复制本地文件并粘贴上传...")
+    if not copy_file_to_clipboard(file_path):
+        raise Exception("复制文件到剪贴板失败")
+    def pre_click(p):
+        open_doubao_chat_page_precondition(p)
+    try:
+        interaction_manager.perform_interaction(
+            page_doubao,
+            interaction_id="doubao.chat.input_box_paste",
+            default_selector="div[data-testid='chat_input_input'] div[contenteditable='true']",
+            action_type="click",
+            precondition=pre_click
+        )
+    except Exception:
+        interaction_manager.perform_interaction(
+            page_doubao,
+            interaction_id="doubao.chat.input_box_paste_container",
+            default_selector="div[data-testid='chat_input_input']",
+            action_type="click",
+            precondition=pre_click
+        )
+    page_doubao.wait_for_timeout(500)
+    page_doubao.keyboard.press("Control+V")
+    page_doubao.wait_for_timeout(2000)
+    print("✅ 文件已粘贴到输入框")
 
 def publish_xiaohongshu_longform(page_xiaohongshu, short_title, body_content, cover_image, tags):
     print("正在切换到小红书长文模式...")
@@ -481,11 +849,6 @@ app_secret = os.getenv("WECHAT_APP_SECRET")
 wechat_upload_via_ecs = os.getenv("WECHAT_UPLOAD_VIA_ECS")
 wechat_ecs_gateway_url = os.getenv("WECHAT_ECS_GATEWAY_URL")
 
-# 获取钉钉APP_KEY和APP_SECRET
-dingtalk_app_key = os.getenv("DINGTALK_APP_KEY")
-dingtalk_app_secret = os.getenv("DINGTALK_APP_SECRET")
-dingtalk_user_id = os.getenv("DINGTALK_USER_ID")
-
 def parse_bool_value(value, default=False):
     if value is None:
         return default
@@ -518,31 +881,6 @@ if (not app_id or not app_secret) and not wechat_upload_via_ecs_enabled:
 
 if wechat_upload_via_ecs_enabled and not wechat_ecs_gateway_url:
     print("❌ 已开启 WECHAT_UPLOAD_VIA_ECS，但未设置 WECHAT_ECS_GATEWAY_URL")
-    exit(1)
-
-if not dingtalk_app_key or not dingtalk_app_secret or not dingtalk_user_id:
-    print("❌ 请设置环境变量 DINGTALK_APP_KEY, DINGTALK_APP_SECRET 和 DINGTALK_USER_ID")
-    print("")
-    print("推荐方式：使用 .env 文件")
-    print("1. 复制 .env.example 文件为 .env")
-    print("   cp .env.example .env")
-    print("2. 编辑 .env 文件，填入你的实际配置")
-    print("")
-    print("或者设置系统环境变量：")
-    print("Linux/macOS:")
-    print("export DINGTALK_APP_KEY=your_app_key")
-    print("export DINGTALK_APP_SECRET=your_app_secret")
-    print("export DINGTALK_USER_ID=your_user_id")
-    print("")
-    print("Windows (命令提示符):")
-    print("set DINGTALK_APP_KEY=your_app_key")
-    print("set DINGTALK_APP_SECRET=your_app_secret")
-    print("set DINGTALK_USER_ID=your_user_id")
-    print("")
-    print("Windows (PowerShell):")
-    print("$env:DINGTALK_APP_KEY='your_app_key'")
-    print("$env:DINGTALK_APP_SECRET='your_app_secret'")
-    print("$env:DINGTALK_USER_ID='your_user_id'")
     exit(1)
 
 def compress_image(image_path, max_size_mb=5, quality=85):
@@ -707,35 +1045,17 @@ def generate_summary_with_doubao(browser_context, markdown_file):
     Returns:
         str: 生成的summary文本，如果失败返回None
     """
+    # 检查缓存
+    cache_filename = "summary.txt"
+    cached_content = get_cached_content(markdown_file, cache_filename)
+    if cached_content:
+        return cached_content
+
     try:
         print("🤖 正在使用豆包AI总结文章...")
         page_doubao = open_doubao_chat_page(browser_context)
         
-        # 点击文件上传按钮
-        print("2️⃣ 点击文件上传按钮...")
-        try:
-            upload_button = page_doubao.locator("button[data-dbx-name='button']", has=page_doubao.locator("svg path[d^='M17.3977']"))
-            if upload_button.count() > 0:
-                upload_button.first.click()
-            else:
-                page_doubao.get_by_test_id("upload_file_button").click()
-        except Exception as e:
-            print(f"⚠️  点击上传按钮失败，尝试旧选择器: {e}")
-            page_doubao.get_by_test_id("upload_file_button").click()
-        page_doubao.wait_for_timeout(1000)
-        print("✅ 文件上传按钮点击成功")
-        
-        print("3️⃣ 选择上传文件选项...")
-        with page_doubao.expect_file_chooser() as page_upload_file:
-            try:
-                page_doubao.get_by_test_id("upload_file_panel_upload_item").click()
-            except Exception:
-                page_doubao.get_by_text("上传文件或图片").click()
-        page_upload_file = page_upload_file.value
-        print("4️⃣ 上传Markdown文件...")
-        page_upload_file.set_files(markdown_file)
-        page_doubao.wait_for_timeout(1000)
-        print("✅ 上传选项选择成功")
+        paste_file_to_doubao(page_doubao, markdown_file)
         
         # 点击聊天输入框
         print("5️⃣ 输入总结提示词...")
@@ -752,7 +1072,7 @@ def generate_summary_with_doubao(browser_context, markdown_file):
         
         # 发送消息
         print("7️⃣ 发送消息...")
-        page_doubao.get_by_test_id("chat_input_send_button").click()
+        click_doubao_send_button(page_doubao)
         print("✅ 消息发送成功，等待AI回复...")
         
         # 等待AI回复完成
@@ -760,29 +1080,17 @@ def generate_summary_with_doubao(browser_context, markdown_file):
         
         # 使用Playwright的wait_for等待复制按钮出现（最多等待60秒）
         print("🔄 等待复制按钮出现...")
-        try:
-            # 等待复制按钮出现，最多等待60秒
-            copy_buttons = page_doubao.get_by_test_id("receive_message").get_by_test_id("message_action_copy")
-            copy_buttons.wait_for(state="visible", timeout=120000)  # 等待120秒
-            copy_button_count = copy_buttons.count()
-            print(f"✅ 找到 {copy_button_count} 个复制按钮")
-        except Exception as e:
-            print(f"⚠️  等待复制按钮超时或出错: {e}")
-            print("❌ 未找到复制按钮")
-            raise Exception("未找到复制按钮")
         
         # 点击复制按钮获取AI回复内容
         print("9️⃣ 复制AI回复内容...")
         
-        if copy_button_count > 0:
-            # 选择最后一个复制按钮（索引为 count-1）
-            last_copy_button = copy_buttons.nth(copy_button_count - 1)
-            last_copy_button.click(timeout=10000)
+        try:
+            click_doubao_copy_button(page_doubao)
             page_doubao.wait_for_timeout(2000)  # 增加等待时间确保复制完成
             print("✅ AI最新回复已复制到剪贴板")
-        else:
-            print("❌ 未找到复制按钮")
-            raise Exception("未找到复制按钮")
+        except Exception as e:
+            print(f"❌ 复制按钮交互失败: {e}")
+            raise e
         
         # 使用 pyperclip 从剪贴板读取内容
         try:
@@ -792,6 +1100,9 @@ def generate_summary_with_doubao(browser_context, markdown_file):
             
             if summary:
                 print(f"🤖 豆包AI总结内容: {summary}")
+                
+                # 保存总结到缓存
+                save_to_cache(markdown_file, "summary.txt", summary)
                 
                 # 保存总结到文件（备份）
                 summary_file = os.path.join("test-results", f"doubao_summary_{os.path.splitext(os.path.basename(markdown_file))[0]}.txt")
@@ -926,27 +1237,9 @@ def generate_newspic_title_with_doubao(browser_context, markdown_file):
         except Exception as e:
             print(f"❌ 选择'{mode}'模式时出错: {e}")
 
-        # 点击文件上传按钮
-        print("2️⃣ 点击文件上传按钮...")
-        try:
-            upload_button = page_doubao.locator("button[data-dbx-name='button']", has=page_doubao.locator("svg path[d^='M17.3977']"))
-            if upload_button.count() > 0:
-                upload_button.first.click()
-            else:
-                page_doubao.get_by_test_id("upload_file_button").click()
-        except Exception as e:
-            print(f"⚠️  点击上传按钮失败，尝试旧选择器: {e}")
-            page_doubao.get_by_test_id("upload_file_button").click()
-        page_doubao.wait_for_timeout(1000)
-        print("✅ 文件上传按钮点击成功")
-        
-        print("3️⃣ 选择上传文件选项...")
-        with page_doubao.expect_file_chooser() as page_upload_file:
-            try:
-                page_doubao.get_by_test_id("upload_file_panel_upload_item").click()
-            except Exception:
-                page_doubao.get_by_text("上传文件或图片").click()
-        page_upload_file = page_upload_file.value
+        if not click_doubao_upload_button(page_doubao):
+            raise Exception("无法点击上传按钮")
+        page_upload_file = select_doubao_upload_file_option(page_doubao)
         print("4️⃣ 上传Markdown文件...")
         page_upload_file.set_files(markdown_file)
         page_doubao.wait_for_timeout(1000)
@@ -966,19 +1259,22 @@ def generate_newspic_title_with_doubao(browser_context, markdown_file):
         
         # 发送消息
         print("7️⃣ 发送消息...")
-        page_doubao.get_by_test_id("chat_input_send_button").click()
+        click_doubao_send_button(page_doubao)
         print("✅ 消息发送成功，等待AI回复...")
         
         # 等待AI回复完成
         print("8️⃣ 等待AI回复...")
-        page_doubao.wait_for_timeout(10000)  # 等待10秒让AI生成回复
         
         # 点击复制按钮获取AI回复内容
         print("9️⃣ 复制AI回复内容...")
-        copy_button = page_doubao.get_by_test_id("receive_message").get_by_test_id("message_action_copy")
-        copy_button.click(timeout=60000)  # 设置点击操作的超时时间为1分钟
-        page_doubao.wait_for_timeout(1000)
-        print("✅ AI回复已复制到剪贴板")
+        try:
+            click_doubao_copy_button(page_doubao)
+            page_doubao.wait_for_timeout(1000)
+            print("✅ AI回复已复制到剪贴板")
+        except Exception as e:
+            print(f"❌ 复制按钮交互失败: {e}")
+            raise e
+
         # 使用 pyperclip 从剪贴板读取内容
         try:
             import pyperclip
@@ -1039,35 +1335,25 @@ def generate_tags_with_doubao(browser_context, markdown_file):
     Returns:
         list: 生成的话题标签列表，如果失败返回空列表
     """
+    # 检查缓存
+    cache_filename = "tags.txt"
+    cached_content = get_cached_content(markdown_file, cache_filename)
+    if cached_content:
+        # 解析标签
+        try:
+            import ast
+            tags_list = ast.literal_eval(cached_content)
+            if isinstance(tags_list, list):
+                return tags_list
+        except:
+            # 兼容非列表格式
+            return [tag.strip() for tag in cached_content.split(',') if tag.strip()]
+
     try:
         print("🏷️  正在使用豆包AI生成话题标签...")
         page_doubao = open_doubao_chat_page(browser_context)
         
-        # 点击文件上传按钮
-        print("2️⃣ 点击文件上传按钮...")
-        try:
-            upload_button = page_doubao.locator("button[data-dbx-name='button']", has=page_doubao.locator("svg path[d^='M17.3977']"))
-            if upload_button.count() > 0:
-                upload_button.first.click()
-            else:
-                page_doubao.get_by_test_id("upload_file_button").click()
-        except Exception as e:
-            print(f"⚠️  点击上传按钮失败，尝试旧选择器: {e}")
-            page_doubao.get_by_test_id("upload_file_button").click()
-        page_doubao.wait_for_timeout(1000)
-        print("✅ 文件上传按钮点击成功")
-        
-        print("3️⃣ 选择上传文件选项...")
-        with page_doubao.expect_file_chooser() as page_upload_file:
-            try:
-                page_doubao.get_by_test_id("upload_file_panel_upload_item").click()
-            except Exception:
-                page_doubao.get_by_text("上传文件或图片").click()
-        page_upload_file = page_upload_file.value
-        print("4️⃣ 上传Markdown文件...")
-        page_upload_file.set_files(markdown_file)
-        page_doubao.wait_for_timeout(1000)
-        print("✅ 上传选项选择成功")
+        paste_file_to_doubao(page_doubao, markdown_file)
         
         print("5️⃣ 输入话题标签生成提示词...")
         prompt_text = "我想将这篇文章发布到各个主流的社交媒体平台，包括但不限于：微信公众号、CSDN、知乎、51CTO、博客园、小红书、快手、抖音等等，请根据文章的内容，帮我想出10个话题标签。请严格按照以下格式返回：['标签1', '标签2', '标签3', '标签4', '标签5', '标签6', '标签7', '标签8', '标签9', '标签10']，不要换行，不要添加其他文字，标签决不能包含空格，不能包含横杠，也不能包含任何特殊字符,只返回Python列表格式的字符串。"
@@ -1083,20 +1369,23 @@ def generate_tags_with_doubao(browser_context, markdown_file):
         
         # 发送消息
         print("7️⃣ 发送消息...")
-        page_doubao.get_by_test_id("chat_input_send_button").click()
+        click_doubao_send_button(page_doubao)
         print("✅ 消息发送成功，等待AI回复...")
         
         # 等待AI回复完成
         print("8️⃣ 等待AI回复...")
-        page_doubao.wait_for_timeout(10000)  # 等待10秒让AI生成回复
         
         # 点击复制按钮获取AI回复内容
         print("9️⃣ 复制AI回复内容...")
-        copy_button = page_doubao.get_by_test_id("receive_message").get_by_test_id("message_action_copy")
-        copy_button.click()
-        page_doubao.wait_for_timeout(1000)
-        print("✅ AI回复已复制到剪贴板")
         
+        try:
+            click_doubao_copy_button(page_doubao)
+            page_doubao.wait_for_timeout(1000)
+            print("✅ AI回复已复制到剪贴板")
+        except Exception as e:
+            print(f"❌ 复制按钮交互失败: {e}")
+            raise e
+            
         # 使用 pyperclip 从剪贴板读取内容
         try:
             import pyperclip
@@ -1153,6 +1442,9 @@ def generate_tags_with_doubao(browser_context, markdown_file):
                     # 移除包含横杠的标签
                     tags_list = [tag for tag in tags_list if '-' not in tag]
                     print("✅ 使用兜底方案（逗号分隔）解析，已移除包含横杠的标签")
+                
+                # 保存标签到缓存
+                save_to_cache(markdown_file, "tags.txt", str(tags_list))
                 
                 # 保存标签到文件（备份）
                 tags_file = os.path.join("test-results", f"doubao_tags_{os.path.splitext(os.path.basename(markdown_file))[0]}.txt")
@@ -1241,6 +1533,8 @@ def test_example(browser_context, request):
         tags_str = request.config.getoption("--tags")
         short_title = request.config.getoption("--short-title")
         rewrite_platform_content = request.config.getoption("--rewrite-platform-content")
+        rewrite_special_prompt = request.config.getoption("--rewrite-special-prompt")
+        image_special_prompt = request.config.getoption("--image-special-prompt")
         
         # 验证必需参数
         if not title:
@@ -1263,22 +1557,20 @@ def test_example(browser_context, request):
         if url:
             print(f"🔗 使用指定的URL: {url}")
         else:
-            print("🔗 URL: 将从钉钉文档自动获取")
+            print("❌ 缺少必需参数 --url！")
+            print("请提供原文链接，例如：")
+            print("pytest -s --headed ./test_social_media_automatic_publish.py --title '文章标题' --url 'https://example.com'")
+            sys.exit(1)
             
         if markdown_file:
             print(f"📁 使用指定的Markdown文件: {markdown_file}")
-            # 提取markdown文件名（不含后缀），因为cnblogs会自动将markdown的文件名作为文章标题。如果命令行参数中title与markdown不一致会报错。
             markdown_filename = os.path.splitext(os.path.basename(markdown_file))[0]
             print(f"📁 Markdown文件名: {markdown_filename}")
         else:
-            print("📁 Markdown文件: 将从钉钉文档自动下载")
-            
-        # 标记是否需要从钉钉文档下载markdown文件
-        need_download_markdown = not markdown_file
-        
-        # 标记是否需要利用dingtalk_sdk获取钉钉文档的url
-        # 只有在提供了markdown文件但没有提供url参数时，才需要获取钉钉文档的url
-        need_get_dingtalk_url = not url and markdown_file
+            print("❌ 缺少必需参数 --markdown-file！")
+            print("请提供本地Markdown文件路径，例如：")
+            print("pytest -s --headed ./test_social_media_automatic_publish.py --title '文章标题' --markdown-file './articles/article.md' --url 'https://example.com'")
+            sys.exit(1)
 
         if cover_image:
             print(f"🖼️  使用指定的封面图: {cover_image}")
@@ -1294,6 +1586,12 @@ def test_example(browser_context, request):
             print("✍️ 平台正文改写: 已开启")
         else:
             print("✍️ 平台正文改写: 未开启")
+            
+        if rewrite_special_prompt:
+            print(f"✨ 正文改写特殊提示词: {rewrite_special_prompt}")
+        if image_special_prompt:
+            print(f"✨ 图片生成特殊提示词: {image_special_prompt}")
+            
         print("=" * 60)
         
         # 标记是否需要使用豆包AI自动生成summary（在markdown文件下载后执行）
@@ -1308,164 +1606,9 @@ def test_example(browser_context, request):
         print(f"将发布到以下平台: {', '.join(target_platforms)}")
         print(f"使用封面图片: {cover_image}")
 
-        # 如果未指定url，则利用dingtalk_sdk搜索并获取钉钉文档的url
-        if need_get_dingtalk_url:
-            print("📁 未指定URL，正在利用dingtalk_sdk搜索钉钉文档...")
-            print(f"🔍 搜索关键词: {title}")
-            
-            try:
-                # 创建钉钉SDK实例
-                dingtalk_sdk = create_sdk(dingtalk_app_key, dingtalk_app_secret)
-                
-                # 使用title作为关键词搜索文档并获取详细信息
-                documents = dingtalk_sdk.search_and_get_document_details_with_user_id(title, dingtalk_user_id)
-                
-                if documents:
-                    # 获取第一个搜索结果的URL
-                    url = documents[0].url
-                    print(f"✅ 找到文档: {documents[0].title}")
-                    print(f"🔗 获取到的钉钉文档URL: {url}")
-                else:
-                    print(f"❌ 未找到包含关键词 '{title}' 的钉钉文档")
-                    print("请检查标题是否正确，或手动指定URL参数")
-                    sys.exit(1)
-                    
-            except Exception as e:
-                print(f"❌ 获取钉钉文档URL失败: {e}")
-                print("请检查钉钉API配置或手动指定URL参数")
-                sys.exit(1)
-        else:
-            print(f"🔗 使用指定的URL: {url}")
-
-        # 如果没有指定markdown文件，则从钉钉文档下载
-        if need_download_markdown:
-            print("📁 未指定Markdown文件，正在从钉钉文档下载...")
-            
-            # 下载钉钉文档为本地markdown文件
-            page_dingtalk_DreamAI_KB = browser_context.new_page()
-            page_dingtalk_DreamAI_KB.goto("https://alidocs.dingtalk.com/i/nodes/Amq4vjg890AlRbA6Td9ZvlpDJ3kdP0wQ")
-            # 登录钉钉文档
-            # 检查是否需要登录
-            try:
-                login_button = page_dingtalk_DreamAI_KB.locator("#wiki-doc-iframe").content_frame.get_by_role("button", name="登录钉钉文档")
-                if login_button.is_visible(timeout=5000):
-                    print("检测到需要登录钉钉文档，正在执行登录...")
-                    login_button.click()
-                    page_dingtalk_DreamAI_KB.locator(".module-qrcode-op-line > .base-comp-check-box > .base-comp-check-box-rememberme-box").first.click()
-                    page_dingtalk_DreamAI_KB.get_by_text("邓龙").click()
-                    print("登录钉钉文档完成")
-                else:
-                    print("已登录钉钉文档，跳过登录步骤")
-            except Exception as e:
-                print(f"登录检查过程中出现异常: {e}")
-                print("继续执行后续步骤...")
-            # page.goto("https://alidocs.dingtalk.com/i/nodes/Amq4vjg890AlRbA6Td9ZvlpDJ3kdP0wQ?code=1d328c3fafd03cf4bc3c319882ced3d4&authCode=1d328c3fafd03cf4bc3c319882ced3d4")
-            # page_dingtalk_DreamAI_KB.get_by_role("textbox", name="快速搜索文档标题").click()
-            # page_dingtalk_DreamAI_KB.get_by_role("textbox", name="快速搜索文档标题").fill("craXcel，一个可以移除Excel密码的开源工具")
-            page_dingtalk_DreamAI_KB.get_by_test_id("cn-dropdown-trigger").locator("path").click()
-            page_dingtalk_DreamAI_KB.get_by_role("textbox", name="搜索（Ctrl + J）").click()
-
-            # 使用提供的title进行搜索
-            page_dingtalk_DreamAI_KB.get_by_role("textbox", name="搜索（Ctrl + J）").fill(title)
-            
-            with page_dingtalk_DreamAI_KB.expect_popup() as page1_info:
-                # 使用更精确的定位方式，避免匹配到多个元素
-                # 优先查找具有title属性的span元素（这是正确的可点击元素）
-                try:
-                    # 方法1：查找具有title属性的span元素
-                    target_element = page_dingtalk_DreamAI_KB.locator(f'span[title="{title}"]')
-                    if target_element.count() > 0:
-                        print(f"✅ 找到目标元素（span with title）: {title}")
-                        target_element.first.click()
-                    else:
-                        # 方法2：在表格容器中查找文本
-                        target_element = page_dingtalk_DreamAI_KB.get_by_test_id("base-table-container").get_by_text(title)
-                        if target_element.count() > 0:
-                            print(f"✅ 找到目标元素（table container）: {title}")
-                            target_element.first.click()
-                        else:
-                            # 方法3：查找heading元素
-                            heading_element = page_dingtalk_DreamAI_KB.get_by_role("heading").filter(has_text=title)
-                            if heading_element.count() > 0:
-                                print(f"✅ 找到目标元素（heading）: {title}")
-                                try:
-                                    heading_element.get_by_role("link").first.click()
-                                except Exception:
-                                    heading_element.first.click()
-                            else:
-                                # 方法4：使用更精确的文本匹配，排除包含"在高级搜索中查看"的元素
-                                all_elements = page_dingtalk_DreamAI_KB.get_by_text(title)
-                                for i in range(all_elements.count()):
-                                    element_text = all_elements.nth(i).text_content()
-                                    if element_text == title and "在高级搜索中查看" not in element_text:
-                                        print(f"✅ 找到目标元素（精确匹配）: {title}")
-                                        all_elements.nth(i).click()
-                                        break
-                                else:
-                                    raise Exception("未找到匹配的目标元素")
-                except Exception as e:
-                    print(f"❌ 定位目标元素失败: {e}")
-                    raise
-            page_dingtalk_doc = page1_info.value
-
-            # 等待页面基本加载完成
-            page_dingtalk_doc.wait_for_load_state("domcontentloaded", timeout=30000)
-            print("✅ 钉钉文档页面基本加载完成")
-            # 等待额外3秒让页面稳定
-            page_dingtalk_doc.wait_for_timeout(3000)
-
-            
-            page_dingtalk_doc.locator("#wiki-doc-iframe").content_frame.get_by_test_id("doc-header-more-button").click()
-            # 下载钉钉文档为本地markdown文件
-            page_dingtalk_doc.locator("#wiki-doc-iframe").content_frame.get_by_text("下载到本地").first.click()
-            with page_dingtalk_doc.expect_download() as download_info:
-                page_dingtalk_doc.locator("#wiki-doc-iframe").content_frame.get_by_text("Markdown(.md)").click()
-            download = download_info.value
-            # Wait for the download process to complete and save the downloaded file somewhere
-            # 获取下载文件的建议文件名
-            suggested_filename = download.suggested_filename
-            # 构建保存路径
-            save_path = os.path.join("D:/tornadofiles/scripts_脚本/github_projects/playwright-automation/markdown_files", suggested_filename)
-            # 保存文件
-            download.save_as(save_path)
-            
-            # 获取下载文件的绝对路径和文件名
-            downloaded_file_path = os.path.abspath(save_path)
-            downloaded_filename = os.path.basename(downloaded_file_path)
-            
-            # 更新markdown_file变量为下载的文件路径
-            markdown_file = downloaded_file_path
-            
-            print(f"📁 下载文件名: {downloaded_filename}")
-            print(f"📂 下载文件绝对路径: {downloaded_file_path}")
-            
-            # 获取当前网页的网址并赋值给url
-            if not url:
-                try:
-                    current_url = page_dingtalk_doc.url
-                    url = current_url
-                    print(f"🔗 从钉钉文档自动获取URL: {url}")
-                except Exception as e:
-                    print(f"⚠️  获取URL失败: {e}")
-                    print("❌ 获取URL失败，脚本暂停执行")
-                    sys.exit(1)
-        else:
-            print(f"📁 使用指定的Markdown文件: {markdown_file}")
-            # 验证文件是否存在
-            if not os.path.exists(markdown_file):
-                print(f"❌ 指定的Markdown文件不存在: {markdown_file}")
-                sys.exit(1)
-
-        # 获取当前网页的网址并赋值给url
-        if not url:
-            try:
-                current_url = page_dingtalk_doc.url
-                url = current_url
-                print(f"🔗 从钉钉文档自动获取URL: {url}")
-            except Exception as e:
-                print(f"⚠️  获取URL失败: {e}")
-                print("❌ 获取URL失败，脚本暂停执行")
-                sys.exit(1)
+        if not os.path.exists(markdown_file):
+            print(f"❌ 指定的Markdown文件不存在: {markdown_file}")
+            sys.exit(1)
 
         # 如果需要使用豆包AI自动生成summary，现在执行
         if need_ai_summary:
@@ -1573,62 +1716,79 @@ def test_example(browser_context, request):
 
         # 使用豆包AI生成文章封面图（如果没有提供cover_image）
         if not cover_image:
-            print("=" * 60)
-            print("🎨 正在使用豆包AI生成文章封面图...")
-            print("=" * 60)
-            try:
-                # 导入豆包AI图片生成模块
-                from doubao_ai_image_generator import create_doubao_generator
-                import random
-                
-                # 创建新页面用于豆包AI
-                page_doubao = open_doubao_chat_page(browser_context)
-                
-                # 创建豆包AI图片生成器
-                generator = create_doubao_generator(page_doubao, browser_context)
-                
-                # 生成图片（豆包AI会生成4张图片）
-                prompt, image_files = generator.generate_images_from_markdown(
-                    markdown_file=markdown_file,
-                    aspect_ratio="16:9"
-                )
-                
-                if image_files and len(image_files) > 0:
-                    # 随机选择一张图片作为封面图
-                    cover_image = random.choice(image_files)
-                    print(f"✅ 豆包AI图片生成成功，共生成 {len(image_files)} 张图片")
-                    print(f"🎲 随机选择封面图: {os.path.basename(cover_image)}")
-                    print(f"📁 封面图路径: {cover_image}")
+            # 先检查本地缓存
+            cached_image = get_cached_image(markdown_file)
+            if cached_image:
+                cover_image = cached_image
+                print(f"✅ 使用本地缓存的封面图: {cover_image}")
+            else:
+                print("=" * 60)
+                print("🎨 正在使用豆包AI生成文章封面图...")
+                print("=" * 60)
+                try:
+                    # 导入豆包AI图片生成模块
+                    from doubao_ai_image_generator import create_doubao_generator
+                    import random
                     
-                    # 验证文件是否存在且可读
-                    if os.path.exists(cover_image) and os.path.getsize(cover_image) > 0:
-                        print(f"✅ 封面图验证成功，文件大小: {os.path.getsize(cover_image)} 字节")
-                    else:
-                        print(f"❌ 封面图验证失败，文件不存在或为空")
-                        # 如果随机选择的图片有问题，尝试使用第一张图片
-                        if len(image_files) > 1:
-                            cover_image = image_files[0]
-                            print(f"🔄 尝试使用第一张图片作为封面图: {os.path.basename(cover_image)}")
+                    # 创建新页面用于豆包AI
+                    page_doubao = open_doubao_chat_page(browser_context)
+                    
+                    # 创建豆包AI图片生成器
+                    generator = create_doubao_generator(page_doubao, browser_context)
+                    
+                    # 生成图片（豆包AI会生成4张图片）
+                    # prompt, image_files = generator.generate_images_from_markdown(
+                    #     markdown_file=markdown_file,
+                    #     aspect_ratio="16:9",
+                    #     special_prompt=image_special_prompt
+                    # )
+                    
+                    # 改为使用摘要生成图片提示词
+                    print(f"📝 使用摘要生成图片提示词: {summary[:50]}...")
+                    prompt, image_files = generator.generate_images_from_summary(
+                        summary_text=summary,
+                        aspect_ratio="16:9",
+                        special_prompt=image_special_prompt
+                    )
+                    
+                    if image_files and len(image_files) > 0:
+                        # 随机选择一张图片作为封面图
+                        cover_image = random.choice(image_files)
+                        print(f"✅ 豆包AI图片生成成功，共生成 {len(image_files)} 张图片")
+                        print(f"🎲 随机选择封面图: {os.path.basename(cover_image)}")
+                        print(f"📁 封面图路径: {cover_image}")
+                        
+                        # 验证文件是否存在且可读
+                        if os.path.exists(cover_image) and os.path.getsize(cover_image) > 0:
+                            print(f"✅ 封面图验证成功，文件大小: {os.path.getsize(cover_image)} 字节")
+                            # 保存封面图到本地缓存
+                            save_image_to_cache(markdown_file, cover_image)
                         else:
-                            print("❌ 所有生成的图片都有问题，将退出脚本")
-                            sys.exit(1)
-                else:
-                    print("❌ 豆包AI图片生成失败，将退出脚本")
-                    sys.exit(1)
+                            print(f"❌ 封面图验证失败，文件不存在或为空")
+                            # 如果随机选择的图片有问题，尝试使用第一张图片
+                            if len(image_files) > 1:
+                                cover_image = image_files[0]
+                                print(f"🔄 尝试使用第一张图片作为封面图: {os.path.basename(cover_image)}")
+                            else:
+                                print("❌ 所有生成的图片都有问题，将退出脚本")
+                                sys.exit(1)
+                    else:
+                        print("❌ 豆包AI图片生成失败，将退出脚本")
+                        sys.exit(1)
+                    
+                    # 关闭豆包AI页面
+                    page_doubao.close()
+                    print("✅ 豆包AI页面已关闭")
                 
-                # 关闭豆包AI页面
-                page_doubao.close()
-                print("✅ 豆包AI页面已关闭")
-                
-            except ImportError:
-                print("❌ 无法导入豆包AI图片生成模块")
-                print("请确保 doubao_ai_image_generator.py 文件存在")
+                except ImportError:
+                    print("❌ 无法导入豆包AI图片生成模块")
+                    print("请确保 doubao_ai_image_generator.py 文件存在")
 
-                cover_image = None  # 重置为None，让后续代码使用Gemini
-            except Exception as e:
-                print(f"❌ 豆包AI图片生成失败: {e}")
+                    cover_image = None  # 重置为None，让后续代码使用Gemini
+                except Exception as e:
+                    print(f"❌ 豆包AI图片生成失败: {e}")
 
-                cover_image = None  # 重置为None，让后续代码使用Gemini
+                    cover_image = None  # 重置为None，让后续代码使用Gemini
         else:
             print(f"🖼️  使用指定的封面图: {cover_image}")
 
@@ -1781,109 +1941,6 @@ def test_example(browser_context, request):
         else:
             print("⏭️  未指定wechat，跳过将生成的文章封面图上传到微信公众平台图片库.")
 
-        # 将豆包AI生成的文章封面图上传到相应钉钉文档的第一行中
-        # 如果命令行中已经指定了markdown_file，则跳过执行这部分代码
-        if need_download_markdown:
-            try:
-                print("命令行中未指定markdown_file，将执行钉钉文档封面图上传步骤")
-                # 1. 直接聚焦到iframe内容区域
-                iframe_content = page_dingtalk_doc.locator("#wiki-doc-iframe").content_frame
-                print(f"✅ 获取到iframe内容: {iframe_content}")
-               
-                print("查找文档主体以找到可编辑区域")
-                try:
-                    doc_body = iframe_content.locator('body, .document-body, .editor-content')
-                    if doc_body.count() > 0:
-                        doc_body.first.click()
-                        print("✅ 成功聚焦到文档主体")
-                        
-                    else:
-                        print("⚠️  未找到文档主体")
-                except Exception as e:
-                    print(f"❌ 未找到文档主体: {e}")
-
-                print("✅ 已聚焦到iframe内容区域")
-
-                # 等待焦点设置完成
-                page_dingtalk_doc.wait_for_timeout(1000)
-
-                # 2. 尝试移动到文档开头
-                try:
-                    print("正在按下组合键（Control+Home）...")
-                    # iframe_content.press("Control+Home")
-                    # editor_area.press("Control+Home")
-                    # editor_container.press("Control+Home")
-                    doc_body.first.press("Control+Home")
-                    print("✅ 组合键（Control+Home）按下成功，等待2秒...")
-                    page_dingtalk_doc.wait_for_timeout(2000)
-                    # editor_area.press("Control+Home")
-                    print("✅ 成功移动到文档开头")
-                except Exception as e:
-                    print(f"⚠️  组合键（Control+Home）失败: {e}")
-                    sys.exit(1)
-                # 3. 点击插入按钮
-                print("3️⃣ 点击插入按钮...")
-                iframe_content.get_by_test_id("overlay-bi-toolbar-insertMore").get_by_text("插入").click()
-                print("✅ 插入按钮点击成功")
-            # iframe_content.get_by_text("图片上传本地图片").click()
-                
-                print("开始将豆包AI生成的文章封面图上传到钉钉文档...")
-                print(f"即将上传的图片的绝对路径: {cover_image}")
-                # 4. 使用文件选择器处理方式上传图片（参考51CTO的方法）
-                with page_dingtalk_doc.expect_file_chooser() as fc_info_dingtalk:
-                    # 点击文件上传触发元素
-                    print("4️⃣ 点击文件上传触发元素...")
-                    iframe_content.get_by_text("图片上传本地图片").click()          
-                    print("✅ 文件上传触发元素点击成功")
-                # 获取文件选择器并设置文件
-                file_chooser_dingtalk = fc_info_dingtalk.value
-                file_chooser_dingtalk.set_files(cover_image)
-                print("✅ 图片成功上传到钉钉文档")
-                # 等待封面图上传完成
-                page_dingtalk_doc.wait_for_timeout(3000)
-                # 等待文档加载完成
-                print("5️⃣ 等待文档加载完成...")
-                page_dingtalk_doc.wait_for_load_state("domcontentloaded")
-                page_dingtalk_doc.wait_for_timeout(2000)  # 额外等待确保文档完全加载
-                print("✅ 图片上传结束")
-                # 下载钉钉文档为本地markdown文件（新的markdown文件包含封面图），作为markdown_file参数，上传到mdnice
-                print("=" * 60)
-                print("🎨 正在下载钉钉文档为本地markdown文件（新的markdown文件包含封面图）...")
-                print("=" * 60)
-                try:
-                    page_dingtalk_doc.locator("#wiki-doc-iframe").content_frame.get_by_test_id("doc-header-more-button").click()
-                
-                    page_dingtalk_doc.locator("#wiki-doc-iframe").content_frame.get_by_text("下载到本地").first.click()
-                    with page_dingtalk_doc.expect_download() as download_info:
-                        page_dingtalk_doc.locator("#wiki-doc-iframe").content_frame.get_by_text("Markdown(.md)").click()
-                    download = download_info.value
-                    # Wait for the download process to complete and save the downloaded file somewhere
-                    # 获取下载文件的建议文件名
-                    suggested_filename = download.suggested_filename
-                    # 构建保存路径
-                    save_path = os.path.join("D:/tornadofiles/scripts_脚本/github_projects/playwright-automation/markdown_files", suggested_filename)
-                    # 保存文件
-                    download.save_as(save_path)
-                    
-                    # 获取下载文件的绝对路径和文件名
-                    downloaded_new_markdown_file_path = os.path.abspath(save_path)
-                    downloaded_filename = os.path.basename(downloaded_new_markdown_file_path)
-                    
-                    print(f"📁 下载文件名（新的markdown文件包含封面图）: {downloaded_filename}")
-                    print(f"📂 下载文件（新的markdown文件包含封面图）绝对路径: {downloaded_new_markdown_file_path}")
-
-                    # 更新markdown_file变量为下载的文件路径
-                    print(f"✅ 更新markdown_file变量为下载的文件路径: {downloaded_new_markdown_file_path}")
-                    markdown_file = downloaded_new_markdown_file_path
-                except Exception as e:
-                    print(f"❌ 下载钉钉文档为本地markdown文件失败: {e}，将退出脚本")
-                    sys.exit(1)
-            except Exception as e:
-                print(f"❌ 图片上传失败: {e}，将退出脚本")
-                sys.exit(1)
-        else:
-            print("⏭️  已指定markdown文件，跳过钉钉文档封面图上传步骤")
-
         print("=" * 60)
 
         # 解析话题标签
@@ -1923,7 +1980,8 @@ def test_example(browser_context, request):
             platform_rewrite_contents = generate_platform_rewrite_contents(
                 browser_context=browser_context,
                 markdown_file=markdown_file,
-                target_platforms=target_platforms
+                target_platforms=target_platforms,
+                special_prompt=rewrite_special_prompt
             )
             platform_rewrite_markdown_files = write_platform_rewrite_markdown_files(
                 platform_rewrite_contents=platform_rewrite_contents,
@@ -2709,58 +2767,14 @@ def test_example(browser_context, request):
                 print("✅ 已上传图片，准备填写标题和正文")
                 
                 # 设置标题
-                title_input = None
-                title_candidates = [
-                    page_xiaohongshu.get_by_role("textbox", name="填写标题会有更多赞哦～"),
-                    page_xiaohongshu.get_by_placeholder("填写标题会有更多赞哦～"),
-                    page_xiaohongshu.locator("input[placeholder*='标题']"),
-                    page_xiaohongshu.locator("textarea[placeholder*='标题']")
-                ]
-                for candidate in title_candidates:
-                    try:
-                        if candidate.count() > 0 and candidate.first.is_visible():
-                            title_input = candidate.first
-                            break
-                    except Exception:
-                        continue
-                if title_input is None:
-                    try:
-                        page_xiaohongshu.wait_for_timeout(2000)
-                        title_input = page_xiaohongshu.get_by_role("textbox").first
-                    except Exception:
-                        title_input = None
-                if title_input is None:
-                    raise Exception("未找到小红书标题输入框")
-                title_input.click()
-                title_input.fill(short_title)
+                fill_xiaohongshu_title(page_xiaohongshu, short_title)
                 
                 # 设置描述内容
-                content_input = None
-                content_candidates = [
-                    page_xiaohongshu.locator("div[contenteditable='true']"),
-                    page_xiaohongshu.locator("textarea"),
-                    page_xiaohongshu.get_by_role("textbox")
-                ]
-                for candidate in content_candidates:
-                    try:
-                        if candidate.count() > 0:
-                            for i in range(candidate.count()):
-                                item = candidate.nth(i)
-                                if item.is_visible():
-                                    content_input = item
-                                    break
-                        if content_input is not None:
-                            break
-                    except Exception:
-                        continue
-                if content_input is None:
-                    raise Exception("未找到小红书正文输入框")
-                content_input.click()
-                # 先填入摘要和链接
-                # 设置描述内容，使用type方法逐步输入以确保换行生效
-                content_input.click()
-                content_input.type(xiaohongshu_body_content)
-                content_input.press("Enter")
+                fill_xiaohongshu_content(page_xiaohongshu, xiaohongshu_body_content)
+                try:
+                    page_xiaohongshu.keyboard.press("Enter")
+                except:
+                    pass
                 # 若加入链接，则会被核定违规
                 # page_xiaohongshu.get_by_role("textbox").nth(1).type("详情请查阅此文章：")
                 # page_xiaohongshu.get_by_role("textbox").nth(1).type(url)
@@ -3038,8 +3052,8 @@ if __name__ == "__main__":
     print("--author             作者名称（必填）")
     print("--summary            文章摘要（可选，如不指定则使用豆包AI自动生成）")
     print("                     特殊值：'auto'、'doubao'、'豆包'、'ai' - 使用豆包AI自动生成")
-    print("--url                原文链接（可选，如不指定则从钉钉文档自动获取）")
-    print("--markdown-file      Markdown文件路径（可选，如不指定则从钉钉文档自动下载）")
+    print("--url                原文链接（必填）")
+    print("--markdown-file      Markdown文件路径（必填）")
     print("--user-data-dir      浏览器用户数据目录（可选，默认：chromium-browser-data）")
     print("--platforms          指定要发布到的平台（可选，默认发布到所有平台）")
     print("--cover-image        文章封面图片路径（可选，如不指定则使用Gemini自动生成）")
@@ -3047,6 +3061,8 @@ if __name__ == "__main__":
     print("                     特殊值：'auto'、'doubao'、'豆包'、'ai' - 使用豆包AI自动生成")
     print("--short-title        短标题（可选，用于图文平台，如不指定则自动生成）")
     print("--rewrite-platform-content 是否按平台风格改写正文（可选，true/false，默认false）")
+    print("--rewrite-special-prompt 正文改写特殊提示词（可选，默认空）")
+    print("--image-special-prompt  封面图生成特殊提示词（可选，默认空）")
     print("--backup-browser-data 是否备份浏览器数据（可选，true/false，默认true）")
     print()
     print("豆包AI自动生成summary的使用方法：")
@@ -3152,8 +3168,8 @@ if __name__ == "__main__":
     print("--author             作者名称（必填）")
     print("--summary            文章摘要（可选，如不指定则使用豆包AI自动生成）")
     print("                     特殊值：'auto'、'doubao'、'豆包'、'ai' - 使用豆包AI自动生成")
-    print("--url                原文链接（可选，如不指定则从钉钉文档自动获取）")
-    print("--markdown-file      Markdown文件路径（可选，如不指定则从钉钉文档自动下载）")
+    print("--url                原文链接（必填）")
+    print("--markdown-file      Markdown文件路径（必填）")
     print("--user-data-dir      浏览器用户数据目录（可选，默认：chromium-browser-data）")
     print("--platforms          指定要发布到的平台（可选，默认发布到所有平台）")
     print("--cover-image        文章封面图片路径（可选，如不指定则使用Gemini自动生成）")
@@ -3161,6 +3177,8 @@ if __name__ == "__main__":
     print("                     特殊值：'auto'、'doubao'、'豆包'、'ai' - 使用豆包AI自动生成")
     print("--short-title        短标题（可选，用于图文平台，如不指定则自动生成）")
     print("--rewrite-platform-content 是否按平台风格改写正文（可选，true/false，默认false）")
+    print("--rewrite-special-prompt 正文改写特殊提示词（可选，默认空）")
+    print("--image-special-prompt  封面图生成特殊提示词（可选，默认空）")
     print("--backup-browser-data 是否备份浏览器数据（可选，true/false，默认true）")
     print()
     print("豆包AI自动生成summary的使用方法：")

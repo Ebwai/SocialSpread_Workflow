@@ -5,9 +5,6 @@ description = "基于Playwright的社交媒体自动化发布系统，集成AI�
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "alibabacloud-dingtalk>=2.0.0",
-    "alibabacloud-tea-openapi>=0.3.0",
-    "alibabacloud-tea-util>=0.3.0",
     "playwright>=1.54.0",
     "pyperclip>=1.9.0",
     "pytest>=8.4.1",
